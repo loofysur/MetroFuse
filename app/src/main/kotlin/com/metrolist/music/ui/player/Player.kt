@@ -152,6 +152,8 @@ import com.metrolist.music.constants.SleepTimerFadeOutKey
 import com.metrolist.music.constants.SleepTimerStopAfterCurrentSongKey
 import com.metrolist.music.constants.SliderStyle
 import com.metrolist.music.constants.SliderStyleKey
+import com.metrolist.music.constants.SpotifyCanvasEnabledKey
+import com.metrolist.music.constants.SpotifyCookieKey
 import com.metrolist.music.constants.SquigglySliderKey
 import com.metrolist.music.constants.ThumbnailCornerRadius
 import com.metrolist.music.constants.UseNewPlayerDesignKey
@@ -240,6 +242,8 @@ fun BottomSheetPlayer(
         key = PlayerButtonsStyleKey,
         defaultValue = PlayerButtonsStyle.DEFAULT,
     )
+    val spotifyCanvasEnabled by rememberPreference(SpotifyCanvasEnabledKey, false)
+    val spotifyCookie by rememberPreference(SpotifyCookieKey, "")
 
     val isSystemInDarkTheme = isSystemInDarkTheme()
     val darkTheme by rememberEnumPreference(DarkModeKey, defaultValue = DarkMode.AUTO)
@@ -384,6 +388,22 @@ fun BottomSheetPlayer(
     // Use Cast state when casting, otherwise local player
     val effectiveIsPlaying = if (isCasting) castIsPlaying else isPlaying
 
+    val shouldResolveSpotifyCanvasBackground = spotifyCanvasEnabled && state.progress > 0.1f
+    val spotifyCanvasBackground =
+        rememberSpotifyCanvasMedia(
+            mediaMetadata = mediaMetadata,
+            enabled = spotifyCanvasEnabled,
+            cookie = spotifyCookie,
+            shouldLoad = shouldResolveSpotifyCanvasBackground,
+        )
+    val hasSpotifyCanvasBackground = spotifyCanvasBackground != null
+    val effectivePlayerBackground =
+        if (hasSpotifyCanvasBackground) {
+            PlayerBackgroundStyle.BLUR
+        } else {
+            playerBackground
+        }
+
     // Use State objects for position/duration to pass to MiniPlayer without causing recomposition
     // These states persist across playback state changes to ensure continuous progress updates
     val positionState = remember { mutableLongStateOf(0L) }
@@ -470,7 +490,7 @@ fun BottomSheetPlayer(
 
     val TextBackgroundColor by animateColorAsState(
         targetValue =
-            when (playerBackground) {
+            when (effectivePlayerBackground) {
                 PlayerBackgroundStyle.DEFAULT -> MaterialTheme.colorScheme.onBackground
                 PlayerBackgroundStyle.BLUR -> Color.White
                 PlayerBackgroundStyle.GRADIENT -> Color.White
@@ -480,7 +500,7 @@ fun BottomSheetPlayer(
 
     val icBackgroundColor by animateColorAsState(
         targetValue =
-            when (playerBackground) {
+            when (effectivePlayerBackground) {
                 PlayerBackgroundStyle.DEFAULT -> MaterialTheme.colorScheme.surface
                 PlayerBackgroundStyle.BLUR -> Color.Black
                 PlayerBackgroundStyle.GRADIENT -> Color.Black
@@ -490,8 +510,8 @@ fun BottomSheetPlayer(
 
     val (textButtonColor, iconButtonColor) =
         when {
-            playerBackground == PlayerBackgroundStyle.BLUR ||
-                playerBackground == PlayerBackgroundStyle.GRADIENT -> {
+            effectivePlayerBackground == PlayerBackgroundStyle.BLUR ||
+                effectivePlayerBackground == PlayerBackgroundStyle.GRADIENT -> {
                 when (playerButtonsStyle) {
                     PlayerButtonsStyle.DEFAULT -> {
                         Pair(Color.White, Color.Black)
@@ -543,8 +563,8 @@ fun BottomSheetPlayer(
     // Separate colors for Previous/Next buttons in PRIMARY/TERTIARY modes
     val (sideButtonContainerColor, sideButtonContentColor) =
         when {
-            playerBackground == PlayerBackgroundStyle.BLUR ||
-                playerBackground == PlayerBackgroundStyle.GRADIENT -> {
+            effectivePlayerBackground == PlayerBackgroundStyle.BLUR ||
+                effectivePlayerBackground == PlayerBackgroundStyle.GRADIENT -> {
                 when (playerButtonsStyle) {
                     PlayerButtonsStyle.DEFAULT -> {
                         Pair(
@@ -801,9 +821,9 @@ fun BottomSheetPlayer(
         )
 
     val bottomSheetBackgroundColor =
-        when (playerBackground) {
+        when (effectivePlayerBackground) {
             PlayerBackgroundStyle.BLUR, PlayerBackgroundStyle.GRADIENT -> {
-                MaterialTheme.colorScheme.surfaceContainer
+                Color.Black
             }
 
             else -> {
@@ -902,6 +922,17 @@ fun BottomSheetPlayer(
                         PlayerBackgroundStyle.DEFAULT
                     }
                 }
+
+                spotifyCanvasBackground?.let { media ->
+                    SpotifyCanvasVideoBackground(
+                        media = media,
+                        shouldPlay = state.isExpanded && backgroundAlpha > 0.1f && effectiveIsPlaying,
+                        modifier =
+                            Modifier
+                                .fillMaxSize()
+                                .alpha(backgroundAlpha),
+                    )
+                }
             }
         },
         onDismiss =
@@ -938,10 +969,10 @@ fun BottomSheetPlayer(
                         .padding(horizontal = PlayerHorizontalPadding),
             ) {
                 AnimatedContent(
-                    targetState = showInlineLyrics,
+                    targetState = showInlineLyrics || hasSpotifyCanvasBackground,
                     label = "ThumbnailAnimation",
-                ) { showLyrics ->
-                    if (showLyrics) {
+                ) { showCompactArtwork ->
+                    if (showCompactArtwork) {
                         Row {
                             if (hidePlayerThumbnail) {
                                 Box(
@@ -1872,11 +1903,13 @@ fun BottomSheetPlayer(
                             transitionSpec = { fadeIn() togetherWith fadeOut() },
                         ) { showLyrics ->
                             if (showLyrics) {
-                                InlineLyricsView(
-                                    mediaMetadata = mediaMetadata,
-                                    showLyrics = showLyrics,
-                                    positionProvider = { effectivePosition },
-                                )
+                            InlineLyricsView(
+                                mediaMetadata = mediaMetadata,
+                                showLyrics = showLyrics,
+                                positionProvider = { effectivePosition },
+                            )
+                            } else if (hasSpotifyCanvasBackground) {
+                                Spacer(modifier = Modifier.fillMaxSize())
                             } else {
                                 Thumbnail(
                                     sliderPositionProvider = sliderPositionProvider,
@@ -1935,11 +1968,13 @@ fun BottomSheetPlayer(
                             transitionSpec = { fadeIn() togetherWith fadeOut() },
                         ) { showLyrics ->
                             if (showLyrics) {
-                                InlineLyricsView(
-                                    mediaMetadata = mediaMetadata,
-                                    showLyrics = showLyrics,
-                                    positionProvider = { effectivePosition },
-                                )
+                            InlineLyricsView(
+                                mediaMetadata = mediaMetadata,
+                                showLyrics = showLyrics,
+                                positionProvider = { effectivePosition },
+                            )
+                            } else if (hasSpotifyCanvasBackground) {
+                                Spacer(modifier = Modifier.fillMaxSize())
                             } else {
                                 Thumbnail(
                                     sliderPositionProvider = sliderPositionProvider,
@@ -1981,7 +2016,7 @@ fun BottomSheetPlayer(
                 iconButtonColor = iconButtonColor,
                 pureBlack = pureBlack,
                 showInlineLyrics = showInlineLyrics,
-                playerBackground = playerBackground,
+                playerBackground = effectivePlayerBackground,
                 onToggleLyrics = {
                     showInlineLyrics = !showInlineLyrics
                 },

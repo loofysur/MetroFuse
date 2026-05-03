@@ -27,7 +27,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,7 +42,6 @@ import com.metrolist.music.constants.SpotifyCookieKey
 import com.metrolist.music.ui.component.IconButton
 import com.metrolist.music.ui.utils.backToMain
 import com.metrolist.music.utils.rememberPreference
-import com.metrolist.music.utils.spotify.isSpotifyCookieConfigured
 import com.metrolist.music.utils.spotify.normalizeSpotifyCookieInput
 
 private const val SPOTIFY_LOGIN_URL =
@@ -57,6 +55,10 @@ private val SpotifyCookieUrls =
         "https://spotify.com",
     )
 
+private fun isSpotifyWebPlayerUrl(url: String?): Boolean =
+    url?.startsWith("https://open.spotify.com") == true ||
+        url?.startsWith("https://www.spotify.com") == true
+
 @SuppressLint("SetJavaScriptEnabled")
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -66,9 +68,9 @@ fun SpotifyCanvasLoginScreen(
     var spotifyCookie by rememberPreference(SpotifyCookieKey, "")
     var spotifyCanvasEnabled by rememberPreference(SpotifyCanvasEnabledKey, false)
     var webView by remember { mutableStateOf<WebView?>(null) }
-    var cookieCaptured by rememberSaveable { mutableStateOf(isSpotifyCookieConfigured(spotifyCookie)) }
+    var cookieCaptured by remember { mutableStateOf(false) }
 
-    fun captureCookie() {
+    fun captureCookie(showConfirmation: Boolean) {
         val cookieManager = CookieManager.getInstance()
         cookieManager.flush()
 
@@ -82,7 +84,9 @@ fun SpotifyCanvasLoginScreen(
         if (normalizedCookie != null) {
             spotifyCookie = normalizedCookie
             spotifyCanvasEnabled = true
-            cookieCaptured = true
+            if (showConfirmation) {
+                cookieCaptured = true
+            }
         }
     }
 
@@ -120,7 +124,9 @@ fun SpotifyCanvasLoginScreen(
                                 view: WebView,
                                 url: String?,
                             ) {
-                                captureCookie()
+                                if (isSpotifyWebPlayerUrl(url)) {
+                                    captureCookie(showConfirmation = true)
+                                }
                             }
                         }
 
@@ -157,11 +163,11 @@ fun SpotifyCanvasLoginScreen(
         navigationIcon = {
             IconButton(
                 onClick = {
-                    captureCookie()
+                    captureCookie(showConfirmation = false)
                     navController.navigateUp()
                 },
                 onLongClick = {
-                    captureCookie()
+                    captureCookie(showConfirmation = false)
                     navController.backToMain()
                 },
             ) {
@@ -178,7 +184,7 @@ fun SpotifyCanvasLoginScreen(
         if (currentWebView?.canGoBack() == true) {
             currentWebView.goBack()
         } else {
-            captureCookie()
+            captureCookie(showConfirmation = false)
             navController.navigateUp()
         }
     }

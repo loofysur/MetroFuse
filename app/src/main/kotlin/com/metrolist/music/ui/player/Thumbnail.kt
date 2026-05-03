@@ -85,15 +85,12 @@ import com.metrolist.music.constants.PlayerBackgroundStyle
 import com.metrolist.music.constants.PlayerBackgroundStyleKey
 import com.metrolist.music.constants.PlayerHorizontalPadding
 import com.metrolist.music.constants.SeekExtraSeconds
-import com.metrolist.music.constants.SpotifyCanvasEnabledKey
-import com.metrolist.music.constants.SpotifyCookieKey
 import com.metrolist.music.constants.SwipeThumbnailKey
 import com.metrolist.music.constants.ThumbnailCornerRadius
 import com.metrolist.music.listentogether.RoomRole
 import com.metrolist.music.ui.component.CastButton
 import com.metrolist.music.utils.rememberEnumPreference
 import com.metrolist.music.utils.rememberPreference
-import com.metrolist.music.utils.spotify.SpotifyCanvasMedia
 import kotlinx.coroutines.delay
 
 /**
@@ -230,17 +227,9 @@ fun Thumbnail(
     val swipeThumbnail = swipeThumbnailPref && !isListenTogetherGuest
     val hidePlayerThumbnail by rememberPreference(HidePlayerThumbnailKey, false)
     val cropAlbumArt by rememberPreference(CropAlbumArtKey, false)
-    val spotifyCanvasEnabled by rememberPreference(SpotifyCanvasEnabledKey, false)
-    val spotifyCookie by rememberPreference(SpotifyCookieKey, "")
     val playerBackground by rememberEnumPreference(
         key = PlayerBackgroundStyleKey,
         defaultValue = PlayerBackgroundStyle.DEFAULT
-    )
-    val spotifyCanvasMedia = rememberSpotifyCanvasMedia(
-        mediaMetadata = mediaMetadata,
-        enabled = spotifyCanvasEnabled,
-        cookie = spotifyCookie,
-        shouldLoad = !hidePlayerThumbnail && error == null,
     )
     
     // Pre-calculate text color based on background style
@@ -422,8 +411,7 @@ fun Thumbnail(
                                 isListenTogetherGuest = isListenTogetherGuest,
                                 currentMediaId = mediaMetadata?.id,
                                 currentMediaThumbnail = mediaMetadata?.thumbnailUrl,
-                                currentCanvasUrl = appleCanvasUrl,
-                                spotifyCanvasMedia = spotifyCanvasMedia,
+                                currentAppleCanvasUrl = appleCanvasUrl,
                             )
                         }
                     }
@@ -521,8 +509,7 @@ private fun ThumbnailItem(
     isListenTogetherGuest: Boolean = false,
     currentMediaId: String? = null,
     currentMediaThumbnail: String? = null,
-    currentCanvasUrl: String? = null,
-    spotifyCanvasMedia: SpotifyCanvasMedia? = null,
+    currentAppleCanvasUrl: String? = null,
     modifier: Modifier = Modifier,
 ) {
     val incrementalSeekSkipEnabled by rememberPreference(SeekExtraSeconds, defaultValue = false)
@@ -592,15 +579,9 @@ private fun ThumbnailItem(
                     item.mediaMetadata.artworkUri?.toString()
                 }
 
-                if (item.mediaId == currentMediaId && spotifyCanvasMedia != null) {
-                    SpotifyCanvasVideoBackground(
-                        media = spotifyCanvasMedia,
-                        shouldPlay = true,
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                } else if (item.mediaId == currentMediaId && !currentCanvasUrl.isNullOrBlank()) {
+                if (item.mediaId == currentMediaId && !currentAppleCanvasUrl.isNullOrBlank()) {
                     AppleMusicCanvasVideo(
-                        canvasUrl = currentCanvasUrl,
+                        canvasUrl = currentAppleCanvasUrl,
                         modifier = Modifier.fillMaxSize(),
                     )
                 } else {
