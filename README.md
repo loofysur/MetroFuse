@@ -94,8 +94,8 @@ Special thanks to:
 - [Kizzy](https://github.com/dead8309/Kizzy)
 - [Better Lyrics](https://better-lyrics.boidu.dev)
 - [MusicRecognizer](https://github.com/aleksey-saenko/MusicRecognizer)
+- [Canvas Api](https://github.com/Paxsenix0/Spotify-Canvas-API)
 
----
 
 ## License
 
