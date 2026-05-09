@@ -47,6 +47,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -86,6 +87,7 @@ import com.metrolist.music.LocalListenTogetherManager
 import com.metrolist.music.LocalPlayerConnection
 import com.metrolist.music.R
 import com.metrolist.music.constants.ListItemHeight
+import com.metrolist.music.constants.PlayerInlineLyricsKey
 import com.metrolist.music.constants.VarispeedKey
 import com.metrolist.music.listentogether.ConnectionState
 import com.metrolist.music.listentogether.ListenTogetherEvent
@@ -136,6 +138,7 @@ fun PlayerMenu(
     val castDeviceName by castHandler?.castDeviceName?.collectAsStateWithLifecycle() ?: remember { mutableStateOf<String?>(null) }
 
     val varispeedMode by rememberPreference(VarispeedKey, defaultValue = false)
+    var playerInlineLyricsEnabled by rememberPreference(PlayerInlineLyricsKey, defaultValue = true)
 
     val librarySong by database.song(mediaMetadata.id).collectAsStateWithLifecycle(initialValue = null)
     val coroutineScope = rememberCoroutineScope()
@@ -682,6 +685,36 @@ fun PlayerMenu(
                             )
                         }
                     },
+            )
+        }
+
+        item { Spacer(modifier = Modifier.height(12.dp)) }
+
+        item {
+            Material3MenuGroup(
+                items =
+                    listOf(
+                        Material3MenuItemData(
+                            title = { Text(text = stringResource(R.string.lyrics_under_album_cover)) },
+                            description = { Text(text = stringResource(R.string.lyrics_under_album_cover_desc)) },
+                            icon = {
+                                Icon(
+                                    painter = painterResource(R.drawable.lyrics),
+                                    contentDescription = null,
+                                    modifier = Modifier.size(24.dp),
+                                )
+                            },
+                            trailingContent = {
+                                Switch(
+                                    checked = playerInlineLyricsEnabled,
+                                    onCheckedChange = { playerInlineLyricsEnabled = it },
+                                )
+                            },
+                            onClick = {
+                                playerInlineLyricsEnabled = !playerInlineLyricsEnabled
+                            },
+                        ),
+                    ),
             )
         }
 

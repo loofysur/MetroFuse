@@ -121,6 +121,8 @@
     <string name="swipe_song_to_remove">Swipe to remove the song from the playlist</string>
     <string name="lyrics_click_change">Change lyrics on tap</string>
     <string name="lyrics_from_provider">Lyrics from %s</string>
+    <string name="lyrics_under_album_cover">Lyrics under album cover</string>
+    <string name="lyrics_under_album_cover_desc">Show synced lyrics in the expanded player</string>
     <string name="lyrics_auto_scroll">Auto-scroll lyrics</string>
     <string name="hide_status_bar_fullscreen">Hide status bar on fullscreen</string>
     <string name="hide_status_bar_fullscreen_desc">Hide the status bar when lyrics fullscreen mode is active</string>

@@ -146,6 +146,7 @@ import com.metrolist.music.constants.PlayerBackgroundStyleKey
 import com.metrolist.music.constants.PlayerButtonsStyle
 import com.metrolist.music.constants.PlayerButtonsStyleKey
 import com.metrolist.music.constants.PlayerHorizontalPadding
+import com.metrolist.music.constants.PlayerInlineLyricsKey
 import com.metrolist.music.constants.QueuePeekHeight
 import com.metrolist.music.constants.SleepTimerDefaultKey
 import com.metrolist.music.constants.SleepTimerFadeOutKey
@@ -243,6 +244,7 @@ fun BottomSheetPlayer(
         key = PlayerButtonsStyleKey,
         defaultValue = PlayerButtonsStyle.DEFAULT,
     )
+    val playerInlineLyricsEnabled by rememberPreference(PlayerInlineLyricsKey, defaultValue = true)
     val spotifyCanvasEnabled by rememberPreference(SpotifyCanvasEnabledKey, false)
     val spotifyCookie by rememberPreference(SpotifyCookieKey, "")
 
@@ -323,6 +325,7 @@ fun BottomSheetPlayer(
     val playbackState by playerConnection.playbackState.collectAsStateWithLifecycle()
     val mediaMetadata by playerConnection.mediaMetadata.collectAsStateWithLifecycle()
     val currentSong by playerConnection.currentSong.collectAsStateWithLifecycle(initialValue = null)
+    val currentLyrics by playerConnection.currentLyrics.collectAsStateWithLifecycle(initialValue = null)
     val embeddedCanvasUrl by playerConnection.service.currentEmbeddedCanvasUrl.collectAsStateWithLifecycle()
     val currentFormat by playerConnection.currentFormat.collectAsStateWithLifecycle(initialValue = null)
     val automix by playerConnection.service.automixItems.collectAsStateWithLifecycle()
@@ -423,6 +426,44 @@ fun BottomSheetPlayer(
         } else {
             playerBackground
         }
+    val database = LocalDatabase.current
+
+    LaunchedEffect(mediaMetadata?.id, state.isExpanded, showInlineLyrics, playerInlineLyricsEnabled, currentLyrics, isLocalMedia) {
+        val currentMetadata = mediaMetadata ?: return@LaunchedEffect
+        if (!state.isExpanded || showInlineLyrics || !playerInlineLyricsEnabled || isLocalMedia || currentLyrics?.id == currentMetadata.id) {
+            return@LaunchedEffect
+        }
+
+        delay(650)
+        if (!state.isExpanded || showInlineLyrics || !playerInlineLyricsEnabled || isLocalMedia || !isActive) {
+            return@LaunchedEffect
+        }
+
+        withContext(Dispatchers.IO) {
+            try {
+                val existing = database.lyrics(currentMetadata.id).first()
+                if (existing != null) return@withContext
+
+                val entryPoint =
+                    EntryPointAccessors.fromApplication(
+                        context.applicationContext,
+                        com.metrolist.music.di.LyricsHelperEntryPoint::class.java,
+                    )
+                val lyricsHelper = entryPoint.lyricsHelper()
+                val fetchedLyricsWithProvider = lyricsHelper.getLyrics(currentMetadata)
+                database.query {
+                    upsert(
+                        LyricsEntity(
+                            currentMetadata.id,
+                            fetchedLyricsWithProvider.lyrics,
+                            fetchedLyricsWithProvider.provider,
+                        ),
+                    )
+                }
+            } catch (_: Exception) {
+            }
+        }
+    }
 
     // Use State objects for position/duration to pass to MiniPlayer without causing recomposition
     // These states persist across playback state changes to ensure continuous progress updates
@@ -979,6 +1020,22 @@ fun BottomSheetPlayer(
                 animationSpec = tween(durationMillis = 90, easing = LinearEasing),
                 label = "playPauseRoundness",
             )
+
+            if (playerInlineLyricsEnabled && !showInlineLyrics) {
+                PlayerInlineLyrics(
+                    lyricsEntity = currentLyrics,
+                    positionMs = sliderPosition ?: effectivePosition,
+                    textColor = TextBackgroundColor,
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(
+                                start = PlayerHorizontalPadding,
+                                end = PlayerHorizontalPadding,
+                                bottom = 8.dp,
+                            ),
+                )
+            }
 
             Row(
                 horizontalArrangement = Arrangement.SpaceBetween,
