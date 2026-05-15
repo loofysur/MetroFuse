@@ -84,6 +84,7 @@ import com.metrolist.music.ui.component.EnumDialog
 import com.metrolist.music.ui.component.IconButton
 import com.metrolist.music.ui.component.Material3SettingsGroup
 import com.metrolist.music.ui.component.Material3SettingsItem
+import com.metrolist.music.ui.component.MetroMixStudioDialog
 import com.metrolist.music.ui.component.TextFieldDialog
 import com.metrolist.music.ui.utils.backToMain
 import com.metrolist.music.utils.rememberEnumPreference
@@ -277,6 +278,9 @@ fun PlayerSettings(
     var showMetroMixPresetDialog by remember {
         mutableStateOf(false)
     }
+    var showMetroMixStudioDialog by remember {
+        mutableStateOf(false)
+    }
 
     if (showAudioQualityDialog) {
         EnumDialog(
@@ -360,6 +364,14 @@ fun PlayerSettings(
             values = MetroMixPreset.values().toList(),
             valueText = { metroMixPresetLabel(it) },
             valueDescription = { metroMixPresetDescription(it) },
+        )
+    }
+
+    if (showMetroMixStudioDialog) {
+        MetroMixStudioDialog(
+            current = null,
+            next = null,
+            onDismiss = { showMetroMixStudioDialog = false },
         )
     }
 
@@ -559,6 +571,12 @@ fun PlayerSettings(
                     onClick = { onMetroMixEnabledChange(!metroMixEnabled) }
                 ))
                 if (metroMixEnabled) {
+                    add(Material3SettingsItem(
+                        icon = painterResource(R.drawable.graphic_eq),
+                        title = { Text(stringResource(R.string.metromix_studio)) },
+                        description = { Text(stringResource(R.string.metromix_studio_desc)) },
+                        onClick = { showMetroMixStudioDialog = true }
+                    ))
                     add(Material3SettingsItem(
                         icon = painterResource(R.drawable.tune),
                         title = { Text(stringResource(R.string.metromix_preset)) },

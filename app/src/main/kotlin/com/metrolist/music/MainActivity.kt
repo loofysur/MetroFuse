@@ -444,7 +444,9 @@ class MainActivity : ComponentActivity() {
 
                         Updater.checkForUpdate().onSuccess { (releaseInfo, hasUpdate) ->
                             if (releaseInfo != null) {
-                                onLatestVersionNameChange(releaseInfo.versionName)
+                                onLatestVersionNameChange(
+                                    if (hasUpdate) releaseInfo.versionName else BuildConfig.VERSION_NAME,
+                                )
                                 if (hasUpdate && notifEnabled) {
                                     val downloadUrl = Updater.getDownloadUrlForCurrentVariant(releaseInfo)
                                     if (downloadUrl != null) {

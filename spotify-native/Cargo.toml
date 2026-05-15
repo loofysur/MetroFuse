@@ -1,0 +1,18 @@
+[package]
+name = "metrofuse_spotify"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "metrofuse_spotify"
+crate-type = ["cdylib"]
+
+[dependencies]
+android_logger = "0.15"
+jni = "0.21"
+librespot-core = { version = "0.8", default-features = false, features = ["rustls-tls-webpki-roots"] }
+librespot-playback = { version = "0.8", default-features = false, features = ["rustls-tls-webpki-roots"] }
+log = "0.4"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread"] }

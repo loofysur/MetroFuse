@@ -120,7 +120,7 @@ class MusicDatabase(
         SortedSongAlbumMap::class,
         PlaylistSongMapPreview::class,
     ],
-    version = 39,
+    version = 40,
     exportSchema = true,
     autoMigrations = [
         AutoMigration(from = 2, to = 3),
@@ -159,6 +159,7 @@ class MusicDatabase(
         AutoMigration(from = 35, to = 36, spec = Migration35To36::class),
         AutoMigration(from = 36, to = 37),
         AutoMigration(from = 37, to = 38),
+        AutoMigration(from = 39, to = 40),
     ],
 )
 @TypeConverters(Converters::class)
@@ -309,11 +310,11 @@ private class BackupCallback(
     }
 }
 
-private const val CURRENT_ROOM_IDENTITY_HASH = "1d2103bea6643bee922ca6c0bccf21a7"
+private const val CURRENT_ROOM_IDENTITY_HASH = "f73c0121757d9c2e0f6f603be5eb223c"
 
 private fun repairRoomIdentityIfSafe(db: SupportSQLiteDatabase) {
     try {
-        if (!hasSchema39Shape(db)) return
+        if (!hasSchema40Shape(db)) return
         val currentHash =
             db.query("SELECT identity_hash FROM room_master_table WHERE id = 42").use { cursor ->
                 if (cursor.moveToFirst()) cursor.getString(0) else null
@@ -344,6 +345,12 @@ private fun hasSchema39Shape(db: SupportSQLiteDatabase): Boolean =
         columnExists(db, "speed_dial_item", "albumName") &&
         tableExists(db, "format") &&
         columnExists(db, "format", "perceptualLoudnessDb")
+
+private fun hasSchema40Shape(db: SupportSQLiteDatabase): Boolean =
+    hasSchema39Shape(db) &&
+        columnExists(db, "song", "bpm") &&
+        columnExists(db, "song", "keySignature") &&
+        columnExists(db, "song", "mixMetadataSource")
 
 private fun ensureSchema39Shape(db: SupportSQLiteDatabase) {
     ensureColumn(db, "song", "mixInStartMs", "ALTER TABLE song ADD COLUMN mixInStartMs INTEGER DEFAULT NULL")

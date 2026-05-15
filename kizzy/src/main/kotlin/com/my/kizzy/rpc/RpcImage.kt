@@ -31,10 +31,17 @@ sealed class RpcImage {
         override suspend fun resolveImage(resolveExternalImage: suspend (String) -> String?): String? {
             val asset = ArtworkCache.getOrFetch(image) { resolveExternalImage(image) }
             return when {
-                asset != null -> if (asset.startsWith("http") || asset.startsWith("mp:")) asset else "mp:$asset"
+                asset != null -> asset.toPresenceImage()
+                fallbackDiscordAsset != null -> ArtworkCache
+                    .getOrFetch(fallbackDiscordAsset) { resolveExternalImage(fallbackDiscordAsset) }
+                    ?.toPresenceImage()
+                    ?: fallbackDiscordAsset.takeIf { it.startsWith("http") }?.toPresenceImage()
                 image.startsWith("http") -> image // Raw URL
-                else -> fallbackDiscordAsset?.let { if (it.startsWith("http")) it else "mp:${it}" }
+                else -> null
             }
         }
+
+        private fun String.toPresenceImage(): String =
+            if (startsWith("http") || startsWith("mp:")) this else "mp:$this"
     }
 }

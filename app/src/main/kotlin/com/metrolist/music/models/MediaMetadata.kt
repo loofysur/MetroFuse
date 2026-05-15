@@ -36,6 +36,9 @@ data class MediaMetadata(
     val suggestedBy: String? = null,
     val isEpisode: Boolean = false,
     val uploadEntityId: String? = null,
+    val bpm: Float? = null,
+    val keySignature: String? = null,
+    val mixMetadataSource: String? = null,
 ) : Serializable {
     val isVideoSong: Boolean
         get() = musicVideoType != null && musicVideoType != MUSIC_VIDEO_TYPE_ATV
@@ -72,7 +75,10 @@ data class MediaMetadata(
             isVideo = isVideoSong,
             isEpisode = isEpisode,
             isUploaded = musicVideoType == MUSIC_VIDEO_TYPE_PRIVATELY_OWNED_TRACK,
-            uploadEntityId = uploadEntityId
+            uploadEntityId = uploadEntityId,
+            bpm = bpm,
+            keySignature = keySignature,
+            mixMetadataSource = mixMetadataSource,
         )
 
     fun toYTItem() = SongItem(
@@ -129,6 +135,9 @@ fun Song.toMediaMetadata() =
         suggestedBy = null,
         isEpisode = song.isEpisode,
         uploadEntityId = song.uploadEntityId,
+        bpm = song.bpm,
+        keySignature = song.keySignature,
+        mixMetadataSource = song.mixMetadataSource,
     )
 
 /**

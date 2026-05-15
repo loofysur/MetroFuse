@@ -22,6 +22,7 @@ import timber.log.Timber
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import kotlin.math.min
 
 data class AppleCanvasArtwork(
     val title: String?,
@@ -45,7 +46,10 @@ object AppleMusicCanvasProvider {
             ".4n8qYF4qa18sL1E0G9A3qX35cD8wQ-IJcS9Bh8ZT8JV_yLBtVq46B-9-2ZS3EvWHuw3yK9BYFYAhAdTaDm38vQ"
 
     private const val AMP_BASE_URL = "https://amp-api.music.apple.com"
+    private const val APPLE_MUSIC_WEB_BASE_URL = "https://music.apple.com"
     private const val CACHE_TTL_MS = 1000L * 60 * 60 * 24
+    private val WEB_MVOD_HLS_REGEX =
+        Regex("""https://mvod\.itunes\.apple\.com/[^"'<>\\\s]+?\.m3u8""")
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(6, TimeUnit.SECONDS)
@@ -315,15 +319,20 @@ object AppleMusicCanvasProvider {
             .addQueryParameter("extend", "editorialVideo")
             .build()
 
-        val root = executeJson(appleRequest(url.toString())) ?: return@runCatching null
-        val album = root["data"].arr()?.firstOrNull()?.obj() ?: return@runCatching null
-        val attributes = album["attributes"].obj() ?: return@runCatching null
-        val editorialVideo = attributes["editorialVideo"].obj() ?: return@runCatching null
-        val hlsUrl = extractEditorialVideoUrl(editorialVideo, preferredAspect) ?: return@runCatching null
+        val root = executeJson(appleRequest(url.toString()))
+        val album = root?.get("data").arr()?.firstOrNull()?.obj()
+        val attributes = album?.get("attributes").obj()
+        val hlsUrl =
+            attributes
+                ?.get("editorialVideo")
+                .obj()
+                ?.let { extractEditorialVideoUrl(it, preferredAspect) }
+                ?: fetchWebPageMotionArtwork(albumId, storefront, preferredAspect)
+                ?: return@runCatching null
 
         AppleCanvasArtwork(
-            title = titleOverride ?: attributes["name"].str(),
-            artist = artistOverride ?: attributes["artistName"].str() ?: fallbackArtist,
+            title = titleOverride ?: attributes?.get("name").str(),
+            artist = artistOverride ?: attributes?.get("artistName").str() ?: fallbackArtist,
             albumId = albumId,
             animated = hlsUrl,
         )
@@ -340,6 +349,13 @@ object AppleMusicCanvasProvider {
         }
     }
 
+    private suspend fun executeText(request: Request): String? = withContext(Dispatchers.IO) {
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) return@withContext null
+            response.body.string()
+        }
+    }
+
     private fun appleRequest(url: String): Request =
         Request.Builder()
             .url(url)
@@ -348,6 +364,47 @@ object AppleMusicCanvasProvider {
             .header("Referer", "https://music.apple.com/")
             .header("User-Agent", "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 Chrome/147 Mobile Safari/537.36")
             .build()
+
+    private fun appleWebRequest(url: String): Request =
+        Request.Builder()
+            .url(url)
+            .header("User-Agent", "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 Chrome/147 Mobile Safari/537.36")
+            .build()
+
+    private suspend fun fetchWebPageMotionArtwork(
+        albumId: String,
+        storefront: String,
+        preferredAspect: CanvasAspectPreference,
+    ): String? = runCatching {
+        val html = executeText(appleWebRequest("$APPLE_MUSIC_WEB_BASE_URL/$storefront/album/$albumId"))
+            ?: return@runCatching null
+        extractWebPageMotionArtworkUrl(html, preferredAspect)
+    }.onFailure { error ->
+        if (error is CancellationException) throw error
+        Timber.tag("AppleCanvas").d(error, "Apple Music web canvas lookup failed")
+    }.getOrNull()
+
+    private fun extractWebPageMotionArtworkUrl(
+        html: String,
+        preferredAspect: CanvasAspectPreference,
+    ): String? {
+        val fields = when (preferredAspect) {
+            CanvasAspectPreference.TALL -> listOf("motionDetailTall", "motionDetailSquare", "motionDetailRaw")
+            CanvasAspectPreference.SQUARE -> listOf("motionDetailSquare", "motionDetailTall", "motionDetailRaw")
+            CanvasAspectPreference.RAW -> listOf("motionDetailRaw", "motionDetailSquare", "motionDetailTall")
+            CanvasAspectPreference.AUTO -> listOf("motionDetailSquare", "motionDetailTall", "motionDetailRaw")
+        }
+
+        fields.forEach { field ->
+            val index = html.indexOf("\"$field\"")
+            if (index >= 0) {
+                val end = min(html.length, index + 2_500)
+                WEB_MVOD_HLS_REGEX.find(html.substring(index, end))?.value?.let { return it }
+            }
+        }
+
+        return WEB_MVOD_HLS_REGEX.find(html)?.value
+    }
 
     private fun extractEditorialVideoUrl(
         editorialVideo: JsonObject,

@@ -98,6 +98,12 @@ fun SettingsScreen(
                     onClick = { navController.navigate("settings/player") }
                 ),
                 Material3SettingsItem(
+                    icon = painterResource(R.drawable.speed),
+                    title = { Text(stringResource(R.string.provider_health)) },
+                    description = { Text(stringResource(R.string.provider_health_settings_desc)) },
+                    onClick = { navController.navigate("settings/provider_health") }
+                ),
+                Material3SettingsItem(
                     icon = painterResource(R.drawable.language),
                     title = { Text(stringResource(R.string.content)) },
                     onClick = { navController.navigate("settings/content") }

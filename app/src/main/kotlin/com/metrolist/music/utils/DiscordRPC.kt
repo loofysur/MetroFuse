@@ -34,6 +34,8 @@ class DiscordRPC(
         button2Visible: Boolean = true,
         activityType: String = "listening",
         activityName: String = "",
+        largeImageUrl: String? = song.song.thumbnailUrl,
+        largeImageFallbackUrl: String? = song.song.thumbnailUrl,
     ) = runCatching {
         val currentTime = System.currentTimeMillis()
 
@@ -75,13 +77,17 @@ class DiscordRPC(
         val name = activityName.ifEmpty {
             context.getString(R.string.app_name).removeSuffix(" Debug")
         }
+        val largeImage =
+            largeImageUrl
+                ?.takeIf { it.isNotBlank() }
+                ?.let { RpcImage.ExternalImage(it, fallbackDiscordAsset = largeImageFallbackUrl) }
 
         setActivity(
             name = name,
             details = songTitleWithRate,
             state = song.artists.joinToString { it.name },
             detailsUrl = "https://music.youtube.com/watch?v=${song.song.id}",
-            largeImage = song.song.thumbnailUrl?.let { RpcImage.ExternalImage(it) },
+            largeImage = largeImage,
             smallImage = song.artists.firstOrNull()?.thumbnailUrl?.let { RpcImage.ExternalImage(it) },
             largeText = song.album?.title,
             smallText = song.artists.firstOrNull()?.name,

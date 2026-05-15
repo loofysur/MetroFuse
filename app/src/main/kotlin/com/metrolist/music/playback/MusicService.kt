@@ -121,6 +121,7 @@ import com.metrolist.music.constants.DisableLoadMoreWhenRepeatAllKey
 import com.metrolist.music.constants.DiscordActivityNameKey
 import com.metrolist.music.constants.DiscordActivityTypeKey
 import com.metrolist.music.constants.DiscordAdvancedModeKey
+import com.metrolist.music.constants.DiscordAnimatedCoversKey
 import com.metrolist.music.constants.DiscordAvatarKey
 import com.metrolist.music.constants.DiscordButton1TextKey
 import com.metrolist.music.constants.DiscordButton1VisibleKey
@@ -137,8 +138,15 @@ import com.metrolist.music.constants.HideVideoSongsKey
 import com.metrolist.music.constants.HistoryDuration
 import com.metrolist.music.constants.LastFMUseNowPlaying
 import com.metrolist.music.constants.MetroMixEnabledKey
+import com.metrolist.music.constants.MetroMixBarsKey
+import com.metrolist.music.constants.MetroMixEffectCurve
+import com.metrolist.music.constants.MetroMixEffectCurveKey
+import com.metrolist.music.constants.MetroMixEqCurve
+import com.metrolist.music.constants.MetroMixEqCurveKey
 import com.metrolist.music.constants.MetroMixPreset
 import com.metrolist.music.constants.MetroMixPresetKey
+import com.metrolist.music.constants.MetroMixVolumeCurve
+import com.metrolist.music.constants.MetroMixVolumeCurveKey
 import com.metrolist.music.constants.MediaSessionConstants
 import com.metrolist.music.constants.MediaSessionConstants.CommandAddToTargetPlaylist
 import com.metrolist.music.constants.MediaSessionConstants.CommandToggleLike
@@ -236,6 +244,8 @@ import com.metrolist.music.utils.NetworkConnectivityObserver
 import com.metrolist.music.utils.ScrobbleManager
 import com.metrolist.music.utils.SyncUtils
 import com.metrolist.music.utils.dataStore
+import com.metrolist.music.utils.discord.DiscordCanvasLocalConverter
+import com.metrolist.music.utils.discord.DiscordCanvasServerConverter
 import com.metrolist.music.utils.get
 import com.metrolist.music.utils.reportException
 import com.metrolist.music.widget.MetrolistWidgetManager
@@ -270,7 +280,9 @@ import kotlinx.coroutines.plus
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
+import okhttp3.Request
 import timber.log.Timber
 import java.io.File
 import java.io.ObjectInputStream
@@ -293,11 +305,18 @@ private data class CrossfadePreferenceState(
     val crossfadeGapless: Boolean,
     val metroMixEnabled: Boolean,
     val metroMixPreset: MetroMixPreset,
+    val metroMixBars: Int,
+    val metroMixVolumeCurve: MetroMixVolumeCurve,
+    val metroMixEqCurve: MetroMixEqCurve,
+    val metroMixEffectCurve: MetroMixEffectCurve,
 )
 
 private data class MetroMixRuntimeProfile(
     val preset: MetroMixPreset?,
     val durationMs: Long,
+    val volumeCurve: MetroMixVolumeCurve = MetroMixVolumeCurve.AUTO,
+    val eqCurve: MetroMixEqCurve = MetroMixEqCurve.AUTO,
+    val effectCurve: MetroMixEffectCurve = MetroMixEffectCurve.AUTO,
 )
 
 @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
@@ -344,9 +363,14 @@ class MusicService :
     private var crossfadeDuration = 5000f
     private var crossfadeGapless = true
     private var activeMetroMixPreset: MetroMixPreset? = null
+    private var activeMetroMixBars = 8
+    private var activeMetroMixVolumeCurve = MetroMixVolumeCurve.AUTO
+    private var activeMetroMixEqCurve = MetroMixEqCurve.AUTO
+    private var activeMetroMixEffectCurve = MetroMixEffectCurve.AUTO
     private var pendingMetroMixProfile: MetroMixRuntimeProfile? = null
     private var activeCrossfadeDurationMs = 5000L
     private var activeMetroMixRuntimePreset: MetroMixPreset? = null
+    private var activeMetroMixRuntimeProfile: MetroMixRuntimeProfile? = null
     private var crossfadeTriggerJob: Job? = null
     private var crossfadePrepareJob: Job? = null
 
@@ -432,6 +456,7 @@ class MusicService :
         crossfadeJob = null
         pendingMetroMixProfile = null
         activeMetroMixRuntimePreset = null
+        activeMetroMixRuntimeProfile = null
 
         if (secondaryPlayer != null) {
             cleanupSecondaryCrossfadePlayer(scheduleNext = false)
@@ -542,9 +567,27 @@ class MusicService :
         val tempFilePath: String? = null,
     )
 
+    private data class DiscordPresenceArtwork(
+        val imageUrl: String?,
+        val fallbackUrl: String?,
+    )
+
+    private data class CachedDiscordAnimatedCover(
+        val animatedUrl: String?,
+        val expiresAtMs: Long,
+    )
+
     // URL cache for stream URLs - class-level so it can be invalidated on errors
     private val songUrlCache = HashMap<String, CachedSongStream>()
     private val audioFormatRetryJobs = ConcurrentHashMap<String, Job>()
+    private val discordAnimatedCoverCache = ConcurrentHashMap<String, CachedDiscordAnimatedCover>()
+    private val discordAnimatedCoverClient by lazy {
+        OkHttpClient
+            .Builder()
+            .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+    }
 
     // Flag to bypass cache when quality changes - forces fresh stream fetch
     private val bypassCacheForQualityChange = mutableSetOf<String>()
@@ -1033,6 +1076,7 @@ class MusicService :
             .map {
                 listOf(
                     it[DiscordUseDetailsKey],
+                    it[DiscordAnimatedCoversKey],
                     it[DiscordAdvancedModeKey],
                     it[DiscordStatusKey],
                     it[DiscordButton1TextKey],
@@ -1107,6 +1151,10 @@ class MusicService :
                     crossfadeGapless = prefs[CrossfadeGaplessKey] ?: true,
                     metroMixEnabled = prefs[MetroMixEnabledKey] ?: false,
                     metroMixPreset = prefs[MetroMixPresetKey].toEnum(defaultValue = MetroMixPreset.AUTO),
+                    metroMixBars = prefs[MetroMixBarsKey] ?: 8,
+                    metroMixVolumeCurve = prefs[MetroMixVolumeCurveKey].toEnum(defaultValue = MetroMixVolumeCurve.AUTO),
+                    metroMixEqCurve = prefs[MetroMixEqCurveKey].toEnum(defaultValue = MetroMixEqCurve.AUTO),
+                    metroMixEffectCurve = prefs[MetroMixEffectCurveKey].toEnum(defaultValue = MetroMixEffectCurve.AUTO),
                 )
             },
             listenTogetherManager.roomState,
@@ -1118,6 +1166,10 @@ class MusicService :
                 crossfadeGapless = if (prefs.metroMixEnabled) false else prefs.crossfadeGapless,
                 metroMixEnabled = prefs.metroMixEnabled && roomState == null,
                 metroMixPreset = prefs.metroMixPreset,
+                metroMixBars = prefs.metroMixBars,
+                metroMixVolumeCurve = prefs.metroMixVolumeCurve,
+                metroMixEqCurve = prefs.metroMixEqCurve,
+                metroMixEffectCurve = prefs.metroMixEffectCurve,
             )
         }.distinctUntilChanged()
             .collect(scope) { prefs ->
@@ -1125,6 +1177,10 @@ class MusicService :
                 crossfadeDuration = prefs.crossfadeDuration * 1000f // Convert to ms
                 crossfadeGapless = prefs.crossfadeGapless
                 activeMetroMixPreset = prefs.metroMixPreset.takeIf { prefs.metroMixEnabled }
+                activeMetroMixBars = prefs.metroMixBars.coerceIn(2, 32)
+                activeMetroMixVolumeCurve = prefs.metroMixVolumeCurve
+                activeMetroMixEqCurve = prefs.metroMixEqCurve
+                activeMetroMixEffectCurve = prefs.metroMixEffectCurve
                 scheduleCrossfade()
             }
 
@@ -3725,6 +3781,7 @@ class MusicService :
         showFeedback: Boolean = false,
     ) {
         val useDetails = dataStore.get(DiscordUseDetailsKey, false)
+        val useAnimatedCovers = dataStore.get(DiscordAnimatedCoversKey, false)
         val advancedMode = dataStore.get(DiscordAdvancedModeKey, false)
 
         val status = if (advancedMode) dataStore.get(DiscordStatusKey, "online") else "online"
@@ -3738,6 +3795,7 @@ class MusicService :
         discordUpdateJob?.cancel()
         discordUpdateJob =
             scope.launch {
+                val artwork = resolveDiscordPresenceArtwork(song, useAnimatedCovers)
                 discordRpc
                     ?.updateSong(
                         song,
@@ -3751,6 +3809,8 @@ class MusicService :
                         b2Visible,
                         activityType,
                         activityName,
+                        artwork.imageUrl,
+                        artwork.fallbackUrl,
                     )?.onFailure {
                         // Rate limited or error
                         if (showFeedback) {
@@ -3765,6 +3825,127 @@ class MusicService :
                         }
                     }
             }
+    }
+
+    private suspend fun resolveDiscordPresenceArtwork(
+        song: Song,
+        useAnimatedCovers: Boolean,
+    ): DiscordPresenceArtwork {
+        val staticUrl = song.song.thumbnailUrl
+        if (!useAnimatedCovers || song.song.isLocal || song.song.isEpisode || song.song.isVideo) {
+            return DiscordPresenceArtwork(staticUrl, staticUrl)
+        }
+
+        val mediaId = song.song.id
+        val now = System.currentTimeMillis()
+        discordAnimatedCoverCache[mediaId]
+            ?.takeIf { it.expiresAtMs > now }
+            ?.let { cached ->
+                return DiscordPresenceArtwork(
+                    imageUrl = cached.animatedUrl ?: staticUrl,
+                    fallbackUrl = if (cached.animatedUrl == null) staticUrl else null,
+                )
+            }
+
+        val artist = song.orderedArtists.firstOrNull()?.name?.takeIf { it.isNotBlank() }
+            ?: return DiscordPresenceArtwork(staticUrl, staticUrl)
+        val album = song.album?.title ?: song.song.albumName
+        val currentCanvas =
+            currentAppleCanvasUrl.value
+                .takeIf { currentMediaMetadata.value?.id == mediaId }
+                ?.takeIf { !it.isNullOrBlank() }
+        val cachedCanvas =
+            currentCanvas
+                ?: AppleMusicCanvasProvider
+                    .getCached(
+                        song = song.song.title,
+                        artist = artist,
+                        album = album,
+                    )?.animated
+                    ?.takeIf { it.isNotBlank() }
+        val resolvedCanvas =
+            cachedCanvas
+                ?: withTimeoutOrNull(2_500L) {
+                    AppleMusicCanvasProvider
+                        .getBySongArtist(
+                            song = song.song.title,
+                            artist = artist,
+                            album = album,
+                        )?.animated
+                        ?.takeIf { it.isNotBlank() }
+                }
+
+        val animatedUrl =
+            when {
+                resolvedCanvas == null -> null
+                resolvedCanvas.isDiscordAnimatedPresenceImage() -> resolvedCanvas
+                resolvedCanvas.isAppleHlsCanvasUrl() -> prepareDiscordAnimatedCover(resolvedCanvas)
+                else -> null
+            }
+        val expiresInMs =
+            when {
+                animatedUrl != null -> 1000L * 60 * 60 * 24
+                resolvedCanvas != null -> 1000L * 60
+                else -> 1000L * 60 * 5
+            }
+        discordAnimatedCoverCache[mediaId] = CachedDiscordAnimatedCover(
+            animatedUrl = animatedUrl,
+            expiresAtMs = now + expiresInMs,
+        )
+
+        return DiscordPresenceArtwork(
+            imageUrl = animatedUrl ?: staticUrl,
+            fallbackUrl = if (animatedUrl == null) staticUrl else null,
+        )
+    }
+
+    private suspend fun prepareDiscordAnimatedCover(canvasUrl: String): String? {
+        val resolverUrl = dataStore.get(DeezerResolverUrlKey, DeezerAudioProvider.DEFAULT_RESOLVER_URL)
+        DiscordCanvasServerConverter.prepare(
+            canvasUrl = canvasUrl,
+            resolverUrl = resolverUrl,
+            client = discordAnimatedCoverClient,
+        )?.let { serverUrl ->
+            return serverUrl
+        }
+
+        val uploadUrl = discordAnimatedCoverUploadUrl(
+            resolverUrl = resolverUrl,
+            fileName = "${DiscordCanvasLocalConverter.cacheKey(canvasUrl)}.gif",
+        ) ?: return null
+        return DiscordCanvasLocalConverter.prepareAndUpload(
+            context = this,
+            canvasUrl = canvasUrl,
+            uploadUrl = uploadUrl,
+            client = discordAnimatedCoverClient,
+        )
+    }
+
+    private fun discordAnimatedCoverUploadUrl(
+        resolverUrl: String,
+        fileName: String,
+    ): String? {
+        val parsed = resolverUrl.toHttpUrlOrNull() ?: return null
+        return parsed
+            .newBuilder()
+            .encodedPath("/apple_canvas/upload/$fileName")
+            .query(null)
+            .fragment(null)
+            .build()
+            .toString()
+    }
+
+    private fun String.isAppleHlsCanvasUrl(): Boolean {
+        val parsed = toHttpUrlOrNull() ?: return false
+        val host = parsed.host
+        return parsed.scheme == "https" &&
+            parsed.encodedPath.endsWith(".m3u8", ignoreCase = true) &&
+            (host == "mvod.itunes.apple.com" || host.endsWith(".mvod.itunes.apple.com"))
+    }
+
+    private fun String.isDiscordAnimatedPresenceImage(): Boolean {
+        val path = toHttpUrlOrNull()?.encodedPath?.lowercase(Locale.US) ?: return false
+        return path.endsWith(".gif") || path.endsWith(".webp") || path.endsWith(".avif")
     }
 
     private fun upsertAppleWrapperFormat(mediaId: String) {
@@ -5942,11 +6123,23 @@ class MusicService :
                 MetroMixPreset.AUTO -> inferAutoMetroMixPreset()
                 else -> selectedPreset
             }
+        val bpm = player.currentMediaItem?.metadata?.bpm
+        val bars = activeMetroMixBars.coerceIn(2, 32)
+        val barDurationMs = bpm?.takeIf { it in 40f..240f }?.let { (60_000f / it * 4f * bars).toLong() }
+        val presetDurationMs = ((runtimePreset?.durationSeconds ?: (crossfadeDuration / 1000f)) * 1000f).toLong()
         val durationMs =
-            ((runtimePreset?.durationSeconds ?: (crossfadeDuration / 1000f)) * 1000f)
-                .toLong()
-                .coerceIn(750L, 15_000L)
-        return MetroMixRuntimeProfile(runtimePreset, durationMs)
+            if (selectedPreset != null) {
+                barDurationMs ?: (presetDurationMs * (bars / 8f)).toLong()
+            } else {
+                presetDurationMs
+            }.coerceIn(750L, 32_000L)
+        return MetroMixRuntimeProfile(
+            preset = runtimePreset,
+            durationMs = durationMs,
+            volumeCurve = activeMetroMixVolumeCurve,
+            eqCurve = activeMetroMixEqCurve,
+            effectCurve = activeMetroMixEffectCurve,
+        )
     }
 
     private fun inferAutoMetroMixPreset(): MetroMixPreset {
@@ -5996,6 +6189,7 @@ class MusicService :
         pendingMetroMixProfile = null
         activeCrossfadeDurationMs = mixProfile.durationMs
         activeMetroMixRuntimePreset = mixProfile.preset
+        activeMetroMixRuntimeProfile = mixProfile
 
         // Preserve player state before creating the secondary player
         // Use runBlocking to ensure we get the correct state from DataStore
@@ -6010,6 +6204,7 @@ class MusicService :
                 player.nextMediaItemIndex
             }
         if (targetIndex == C.INDEX_UNSET) return
+        val targetMediaItem = runCatching { player.getMediaItemAt(targetIndex) }.getOrNull()
 
         secondaryPlayer = createExoPlayer(publishToUi = false)
         val secPlayer = secondaryPlayer!!
@@ -6023,7 +6218,7 @@ class MusicService :
                     secPlayer.removeListener(this)
                     crossfadePrepareJob?.cancel()
                     crossfadePrepareJob = null
-                    performCrossfadeSwap()
+                    performCrossfadeSwap(targetIndex, targetMediaItem)
                     if (savedShuffleEnabled) {
                         val shufflePlaylistFirst = dataStore.get(ShufflePlaylistFirstKey, false)
                         applyShuffleOrder(player.currentMediaItemIndex, player.mediaItemCount, shufflePlaylistFirst)
@@ -6071,6 +6266,7 @@ class MusicService :
     private fun crossfadeVolumePair(
         progress: Float,
         preset: MetroMixPreset?,
+        profile: MetroMixRuntimeProfile? = null,
     ): Pair<Float, Float> {
         val p = progress.coerceIn(0f, 1f)
         fun smooth(value: Float) = value * value * (3f - 2f * value)
@@ -6085,8 +6281,20 @@ class MusicService :
         }
         fun pair(fadeIn: Float, fadeOut: Float, headroom: Float = 1f): Pair<Float, Float> =
             (fadeIn.coerceIn(0f, 1f) * headroom) to (fadeOut.coerceIn(0f, 1f) * headroom)
+        val effectivePreset =
+            when {
+                profile?.effectCurve == MetroMixEffectCurve.ECHO -> MetroMixPreset.ECHO_OUT
+                profile?.effectCurve == MetroMixEffectCurve.WAVE -> MetroMixPreset.BEAT_BLEND
+                profile?.eqCurve == MetroMixEqCurve.BASS_SWAP -> MetroMixPreset.BASS_SWAP
+                profile?.eqCurve == MetroMixEqCurve.VOCAL_SPACE -> MetroMixPreset.VOCAL_BLEND
+                profile?.volumeCurve == MetroMixVolumeCurve.PUNCHY -> MetroMixPreset.ENERGY_MATCH
+                profile?.volumeCurve == MetroMixVolumeCurve.MELT -> MetroMixPreset.LOOP_OUT
+                profile?.volumeCurve == MetroMixVolumeCurve.WAVE -> MetroMixPreset.BEAT_BLEND
+                profile?.volumeCurve == MetroMixVolumeCurve.BALANCED -> MetroMixPreset.SMART_DJ
+                else -> preset
+            }
 
-        return when (preset) {
+        return when (effectivePreset) {
             null -> {
                 val fadeIn = easeOut(p)
                 val fadeOut = (1f - p) * (1f - p)
@@ -6180,11 +6388,15 @@ class MusicService :
         }
     }
 
-    private fun performCrossfadeSwap() {
+    private fun performCrossfadeSwap(
+        targetIndex: Int,
+        targetMediaItem: MediaItem?,
+    ) {
         val nextPlayer = secondaryPlayer ?: return
         isCrossfading = true
         val currentPlayer = player
         val metroMixPreset = activeMetroMixRuntimePreset ?: activeMetroMixPreset
+        val metroMixProfile = activeMetroMixRuntimeProfile
 
         fadingPlayer = currentPlayer
         player = nextPlayer
@@ -6223,11 +6435,27 @@ class MusicService :
         }
 
         val previousAudioSessionId = fadingPlayer?.audioSessionId ?: C.AUDIO_SESSION_ID_UNSET
-        currentMediaMetadata.value = player.currentMetadata
+        previousMediaItemIndex = targetIndex
+        val transitionedMetadata = targetMediaItem?.metadata ?: player.currentMetadata
+        currentMediaMetadata.value = transitionedMetadata
         updateCurrentAudioFormatFromTracks(player.currentTracks)
         _playerFlow.value = player
         updateNotification()
         updateWidgetUI(player.isPlaying)
+        lastPlaybackSpeed = -1.0f
+        discordUpdateJob?.cancel()
+        if (player.isPlaying && transitionedMetadata != null) {
+            scrobbleManager?.onSongStop()
+            scrobbleManager?.onSongStart(transitionedMetadata, duration = player.duration)
+            scope.launch {
+                database.song(transitionedMetadata.id).first()?.let { song ->
+                    updateDiscordRPC(song)
+                }
+            }
+        }
+        if (dataStore.get(PersistentQueueKey, true)) {
+            saveQueueToDisk()
+        }
 
         openAudioEffectSession()
 
@@ -6251,7 +6479,7 @@ class MusicService :
                     }
 
                     val progress = i / steps.toFloat()
-                    val (fadeIn, fadeOut) = crossfadeVolumePair(progress, metroMixPreset)
+                    val (fadeIn, fadeOut) = crossfadeVolumePair(progress, metroMixPreset, metroMixProfile)
 
                     try {
                         player.volume = startVolume * fadeIn
@@ -6287,6 +6515,7 @@ class MusicService :
         secondaryPlayer = null
         isCrossfading = false
         activeMetroMixRuntimePreset = null
+        activeMetroMixRuntimeProfile = null
         pendingMetroMixProfile = null
         if (scheduleNext) {
             scheduleCrossfade()
@@ -6305,6 +6534,7 @@ class MusicService :
         fadingPlayer = null
         isCrossfading = false
         activeMetroMixRuntimePreset = null
+        activeMetroMixRuntimeProfile = null
         pendingMetroMixProfile = null
         applyEffectiveVolume()
         sleepTimer.notifySongTransition()

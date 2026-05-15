@@ -92,6 +92,7 @@ import com.metrolist.music.constants.MetroMixPreset
 import com.metrolist.music.constants.MetroMixPresetKey
 import com.metrolist.music.constants.PlayerInlineLyricsKey
 import com.metrolist.music.constants.VarispeedKey
+import com.metrolist.music.extensions.metadata
 import com.metrolist.music.listentogether.ConnectionState
 import com.metrolist.music.listentogether.ListenTogetherEvent
 import com.metrolist.music.models.MediaMetadata
@@ -103,6 +104,7 @@ import com.metrolist.music.ui.component.EnumDialog
 import com.metrolist.music.ui.component.ListDialog
 import com.metrolist.music.ui.component.Material3MenuGroup
 import com.metrolist.music.ui.component.Material3MenuItemData
+import com.metrolist.music.ui.component.MetroMixStudioDialog
 import com.metrolist.music.ui.component.NewAction
 import com.metrolist.music.ui.component.NewActionGrid
 import com.metrolist.music.ui.component.VolumeSlider
@@ -262,6 +264,10 @@ fun PlayerMenu(
         mutableStateOf(false)
     }
 
+    var showMetroMixStudioDialog by rememberSaveable {
+        mutableStateOf(false)
+    }
+
     if (showMetroMixPresetDialog) {
         EnumDialog(
             onDismiss = { showMetroMixPresetDialog = false },
@@ -274,6 +280,23 @@ fun PlayerMenu(
             values = MetroMixPreset.values().toList(),
             valueText = { metroMixPresetLabel(it) },
             valueDescription = { metroMixPresetDescription(it) },
+        )
+    }
+
+    if (showMetroMixStudioDialog) {
+        val nextMediaMetadata =
+            runCatching {
+                val nextIndex = playerConnection.player.nextMediaItemIndex
+                if (nextIndex != C.INDEX_UNSET) {
+                    playerConnection.player.getMediaItemAt(nextIndex).metadata
+                } else {
+                    null
+                }
+            }.getOrNull()
+        MetroMixStudioDialog(
+            current = mediaMetadata,
+            next = nextMediaMetadata,
+            onDismiss = { showMetroMixStudioDialog = false },
         )
     }
 
@@ -754,6 +777,20 @@ fun PlayerMenu(
                             ),
                         )
                         if (metroMixEnabled) {
+                            add(
+                                Material3MenuItemData(
+                                    title = { Text(text = stringResource(R.string.metromix_studio)) },
+                                    description = { Text(text = stringResource(R.string.metromix_studio_desc)) },
+                                    icon = {
+                                        Icon(
+                                            painter = painterResource(R.drawable.graphic_eq),
+                                            contentDescription = null,
+                                            modifier = Modifier.size(24.dp),
+                                        )
+                                    },
+                                    onClick = { showMetroMixStudioDialog = true },
+                                ),
+                            )
                             add(
                                 Material3MenuItemData(
                                     title = { Text(text = stringResource(R.string.metromix_preset)) },

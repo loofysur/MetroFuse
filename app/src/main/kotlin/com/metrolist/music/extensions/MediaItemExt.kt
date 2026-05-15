@@ -37,6 +37,9 @@ fun Song.toMediaItem() = MediaItem.Builder()
             .setIsPlayable(true)
             .setExtras(Bundle().apply {
                 putString("artwork_uri", song.thumbnailUrl)
+                song.bpm?.let { putFloat("bpm", it) }
+                song.keySignature?.let { putString("key_signature", it) }
+                song.mixMetadataSource?.let { putString("mix_metadata_source", it) }
             })
             .build()
     )
@@ -85,6 +88,9 @@ fun MediaMetadata.toMediaItem() = MediaItem.Builder()
             .setIsPlayable(true)
             .setExtras(Bundle().apply {
                 thumbnailUrl?.let { putString("artwork_uri", it) }
+                bpm?.let { putFloat("bpm", it) }
+                keySignature?.let { putString("key_signature", it) }
+                mixMetadataSource?.let { putString("mix_metadata_source", it) }
             })
             .build()
     )

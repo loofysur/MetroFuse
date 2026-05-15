@@ -1,15 +1,19 @@
 import org.gradle.api.DefaultTask
+import org.gradle.api.GradleException
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.RegularFileProperty
+import org.gradle.api.provider.ListProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputFile
 import org.gradle.api.tasks.Internal
+import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.TaskAction
 import org.gradle.process.ExecOperations
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import java.net.URL
 import java.util.Properties
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 
 val localProperties = Properties()
@@ -19,6 +23,9 @@ if (localPropertiesFile.exists()) {
 }
 
 val baseApplicationId = "com.metrofuse.music"
+val metroFuseVersionCode = 300
+val metroFuseVersionName = "3.0"
+val metroFuseUpdateRepository = "956tris/MetroFuse"
 val applicationIdOverride = System.getenv("METROLIST_APPLICATION_ID")?.takeIf { it.isNotBlank() }
 val appNameOverride = System.getenv("METROLIST_APP_NAME")?.takeIf { it.isNotBlank() }
 val debugKeystorePathOverride = System.getenv("METROLIST_DEBUG_KEYSTORE_PATH")?.takeIf { it.isNotBlank() }
@@ -27,6 +34,12 @@ val debugKeyAlias = System.getenv("METROLIST_DEBUG_KEY_ALIAS")?.takeIf { it.isNo
 val debugKeyPassword = System.getenv("METROLIST_DEBUG_KEY_PASSWORD")?.takeIf { it.isNotBlank() } ?: "android"
 val persistentDebugKeystoreFile = file("persistent-debug.keystore")
 val workflowDebugKeystoreFile = debugKeystorePathOverride?.let(::file)
+val buildSpotifyNativeEnabled =
+    providers.gradleProperty("buildSpotifyNative")
+        .map { it.equals("true", ignoreCase = true) }
+        .getOrElse(false)
+val spotifyNativeManifest = rootProject.layout.projectDirectory.file("spotify-native/Cargo.toml")
+val spotifyNativeJniLibsDir = layout.buildDirectory.dir("generated/spotifyJniLibs")
 
 plugins {
     id("com.android.application")
@@ -94,8 +107,8 @@ android {
         applicationId = applicationIdOverride ?: baseApplicationId
         minSdk = 26
         targetSdk = 36
-        versionCode = 146
-        versionName = "13.4.2"
+        versionCode = metroFuseVersionCode
+        versionName = metroFuseVersionName
         resValue("string", "app_name", appNameOverride ?: "MetroFuse")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -108,6 +121,7 @@ android {
         buildConfigField("String", "LASTFM_API_KEY", "\"$lastFmKey\"")
         buildConfigField("String", "LASTFM_SECRET", "\"$lastFmSecret\"")
         buildConfigField("String", "ARCHITECTURE", "\"universal\"")
+        buildConfigField("String", "UPDATE_REPOSITORY", "\"$metroFuseUpdateRepository\"")
     }
 
     flavorDimensions += listOf("variant")
@@ -217,6 +231,12 @@ android {
         includeInBundle = false
     }
 
+    sourceSets {
+        getByName("main") {
+            jniLibs.srcDir(file("build/generated/spotifyJniLibs"))
+        }
+    }
+
     lint {
         lintConfig = file("lint.xml")
         warningsAsErrors = false
@@ -319,6 +339,96 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach 
 // class is ever referenced.
 configurations.configureEach {
     exclude(group = "org.json", module = "json")
+}
+
+val buildSpotifyNative = tasks.register<BuildSpotifyNativeTask>("buildSpotifyNative") {
+    group = "build"
+    description = "Build the optional Rust Spotify JNI bridge with cargo-ndk."
+    platform.set("26")
+    targets.set(listOf("arm64-v8a", "armeabi-v7a", "x86_64"))
+    manifestFile.set(spotifyNativeManifest)
+    outputDir.set(spotifyNativeJniLibsDir)
+    rootDir.set(rootProject.layout.projectDirectory)
+}
+
+abstract class BuildSpotifyNativeTask : DefaultTask() {
+    @get:Input
+    abstract val platform: Property<String>
+
+    @get:Input
+    abstract val targets: ListProperty<String>
+
+    @get:InputFile
+    abstract val manifestFile: RegularFileProperty
+
+    @get:OutputDirectory
+    abstract val outputDir: DirectoryProperty
+
+    @get:Internal
+    abstract val rootDir: DirectoryProperty
+
+    @get:Inject
+    abstract val execOperations: ExecOperations
+
+    @TaskAction
+    fun build() {
+        val manifest = manifestFile.get().asFile
+        val output = outputDir.get().asFile
+
+        if (!manifest.exists()) {
+            throw GradleException("Spotify native manifest was not found at $manifest")
+        }
+        if (!commandAvailable(listOf("cargo", "--version"))) {
+            throw GradleException("Rust cargo is required for -PbuildSpotifyNative=true. Install Rust first.")
+        }
+        if (!commandAvailable(listOf("cargo", "ndk", "--version"))) {
+            throw GradleException("cargo-ndk is required for -PbuildSpotifyNative=true. Run: cargo install cargo-ndk")
+        }
+
+        output.mkdirs()
+
+        execOperations.exec {
+            workingDir = rootDir.get().asFile
+            executable = "cargo"
+            args(
+                "ndk",
+                "--platform",
+                platform.get(),
+            )
+            targets.get().forEach { target ->
+                args("-t", target)
+            }
+            args(
+                "-o",
+                output.absolutePath,
+                "build",
+                "--release",
+                "--manifest-path",
+                manifest.absolutePath,
+            )
+        }
+    }
+
+    private fun commandAvailable(command: List<String>): Boolean =
+        try {
+            val process =
+                ProcessBuilder(command)
+                    .redirectErrorStream(true)
+                    .start()
+            process.waitFor(15, TimeUnit.SECONDS) && process.exitValue() == 0
+        } catch (_: Exception) {
+            false
+        }
+}
+
+if (buildSpotifyNativeEnabled) {
+    tasks
+        .matching { task ->
+            task.name == "preBuild" ||
+                (task.name.startsWith("merge") && task.name.endsWith("JniLibFolders"))
+        }.configureEach {
+            dependsOn(buildSpotifyNative)
+        }
 }
 
 dependencies {

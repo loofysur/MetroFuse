@@ -70,6 +70,12 @@ data class SongEntity(
     val mixOutStartMs: Long? = null,
     @ColumnInfo(name = "mixTransitionStyleOverride", defaultValue = "NULL")
     val mixTransitionStyleOverride: String? = null,
+    @ColumnInfo(name = "bpm", defaultValue = "NULL")
+    val bpm: Float? = null,
+    @ColumnInfo(name = "keySignature", defaultValue = "NULL")
+    val keySignature: String? = null,
+    @ColumnInfo(name = "mixMetadataSource", defaultValue = "NULL")
+    val mixMetadataSource: String? = null,
 ) {
     fun localToggleLike() =
         copy(

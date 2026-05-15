@@ -202,6 +202,10 @@ val CrossfadeDurationKey = floatPreferencesKey("crossfadeDurationFloat")
 val CrossfadeGaplessKey = booleanPreferencesKey("crossfadeGapless")
 val MetroMixEnabledKey = booleanPreferencesKey("metroMixEnabled")
 val MetroMixPresetKey = stringPreferencesKey("metroMixPreset")
+val MetroMixBarsKey = intPreferencesKey("metroMixBars")
+val MetroMixVolumeCurveKey = stringPreferencesKey("metroMixVolumeCurve")
+val MetroMixEqCurveKey = stringPreferencesKey("metroMixEqCurve")
+val MetroMixEffectCurveKey = stringPreferencesKey("metroMixEffectCurve")
 
 enum class MetroMixPreset(
     val durationSeconds: Float,
@@ -225,6 +229,30 @@ enum class MetroMixPreset(
     LONG_BLEND(12f),
 }
 
+enum class MetroMixVolumeCurve {
+    AUTO,
+    BALANCED,
+    PUNCHY,
+    MELT,
+    WAVE,
+}
+
+enum class MetroMixEqCurve {
+    AUTO,
+    CLEAN,
+    BASS_SWAP,
+    VOCAL_SPACE,
+    FULL,
+}
+
+enum class MetroMixEffectCurve {
+    AUTO,
+    NONE,
+    FILTER,
+    ECHO,
+    WAVE,
+}
+
 val MaxImageCacheSizeKey = intPreferencesKey("maxImageCacheSize")
 val MaxSongCacheSizeKey = intPreferencesKey("maxSongCacheSize")
 val EnableSongCacheKey = booleanPreferencesKey("enableSongCache")
@@ -239,6 +267,7 @@ val DiscordUsernameKey = stringPreferencesKey("discordUsername")
 val DiscordNameKey = stringPreferencesKey("discordName")
 val EnableDiscordRPCKey = booleanPreferencesKey("discordRPCEnable")
 val DiscordUseDetailsKey = booleanPreferencesKey("discordUseDetails")
+val DiscordAnimatedCoversKey = booleanPreferencesKey("discordAnimatedCovers")
 val DiscordAvatarKey = stringPreferencesKey("discordAvatar")
 val DiscordStatusKey = stringPreferencesKey("discordStatus")
 val DiscordButton1TextKey = stringPreferencesKey("discordButton1Text")
