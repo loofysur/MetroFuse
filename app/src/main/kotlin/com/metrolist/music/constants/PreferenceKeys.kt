@@ -27,6 +27,7 @@ enum class MiniPlayerBackgroundStyle {
     DEFAULT,
     TRANSPARENT,
     BLUR,
+    GALAXY_BLUR,
     GRADIENT,
     PURE_BLACK,
 }
@@ -95,6 +96,7 @@ val HideYoutubeShortsKey = booleanPreferencesKey("hideYoutubeShorts")
 val ShowArtistDescriptionKey = booleanPreferencesKey("showArtistDescription")
 val ShowArtistSubscriberCountKey = booleanPreferencesKey("showArtistSubscriberCount")
 val ShowMonthlyListenersKey = booleanPreferencesKey("showMonthlyListeners")
+val AppleMusicArtistMotionBackgroundKey = booleanPreferencesKey("appleMusicArtistMotionBackground")
 val ProxyEnabledKey = booleanPreferencesKey("proxyEnabled")
 val ProxyUrlKey = stringPreferencesKey("proxyUrl")
 val ProxyTypeKey = stringPreferencesKey("proxyType")
@@ -108,6 +110,45 @@ val LastUpdateCheckTimeKey = longPreferencesKey("lastUpdateCheckTime")
 
 val AudioQualityKey = stringPreferencesKey("audioQuality")
 val StopOnProviderErrorKey = booleanPreferencesKey("stopOnProviderError")
+val AudioProviderOrderKey = stringPreferencesKey("audioProviderOrder")
+val AudioProviderMatchOverridesKey = stringPreferencesKey("audioProviderMatchOverrides")
+
+enum class AudioProviderOrderItem {
+    SOUNDCLOUD,
+    TIDAL,
+    DEEZER,
+    INSTAGRAM,
+    YOUTUBE_MUSIC,
+    QOBUZ,
+    APPLE_MUSIC,
+}
+
+object AudioProviderOrder {
+    val Default: List<AudioProviderOrderItem> =
+        listOf(
+            AudioProviderOrderItem.SOUNDCLOUD,
+            AudioProviderOrderItem.TIDAL,
+            AudioProviderOrderItem.DEEZER,
+            AudioProviderOrderItem.INSTAGRAM,
+            AudioProviderOrderItem.YOUTUBE_MUSIC,
+            AudioProviderOrderItem.QOBUZ,
+            AudioProviderOrderItem.APPLE_MUSIC,
+        )
+
+    fun serialize(providers: List<AudioProviderOrderItem>): String =
+        normalize(providers).joinToString(",") { it.name }
+
+    fun deserialize(value: String?): List<AudioProviderOrderItem> =
+        normalize(
+            value
+                ?.split(',')
+                ?.mapNotNull { raw -> AudioProviderOrderItem.entries.find { it.name == raw.trim() } }
+                .orEmpty(),
+        )
+
+    private fun normalize(providers: List<AudioProviderOrderItem>): List<AudioProviderOrderItem> =
+        (providers + Default).distinct()
+}
 
 enum class AudioQuality {
     AUTO,
@@ -202,6 +243,10 @@ val CrossfadeDurationKey = floatPreferencesKey("crossfadeDurationFloat")
 val CrossfadeGaplessKey = booleanPreferencesKey("crossfadeGapless")
 val MetroMixEnabledKey = booleanPreferencesKey("metroMixEnabled")
 val MetroMixPresetKey = stringPreferencesKey("metroMixPreset")
+val MetroMixBarsKey = intPreferencesKey("metroMixBars")
+val MetroMixVolumeCurveKey = stringPreferencesKey("metroMixVolumeCurve")
+val MetroMixEqCurveKey = stringPreferencesKey("metroMixEqCurve")
+val MetroMixEffectCurveKey = stringPreferencesKey("metroMixEffectCurve")
 
 enum class MetroMixPreset(
     val durationSeconds: Float,
@@ -225,6 +270,30 @@ enum class MetroMixPreset(
     LONG_BLEND(12f),
 }
 
+enum class MetroMixVolumeCurve {
+    AUTO,
+    BALANCED,
+    PUNCHY,
+    MELT,
+    WAVE,
+}
+
+enum class MetroMixEqCurve {
+    AUTO,
+    CLEAN,
+    BASS_SWAP,
+    VOCAL_SPACE,
+    FULL,
+}
+
+enum class MetroMixEffectCurve {
+    AUTO,
+    NONE,
+    FILTER,
+    ECHO,
+    WAVE,
+}
+
 val MaxImageCacheSizeKey = intPreferencesKey("maxImageCacheSize")
 val MaxSongCacheSizeKey = intPreferencesKey("maxSongCacheSize")
 val EnableSongCacheKey = booleanPreferencesKey("enableSongCache")
@@ -239,6 +308,7 @@ val DiscordUsernameKey = stringPreferencesKey("discordUsername")
 val DiscordNameKey = stringPreferencesKey("discordName")
 val EnableDiscordRPCKey = booleanPreferencesKey("discordRPCEnable")
 val DiscordUseDetailsKey = booleanPreferencesKey("discordUseDetails")
+val DiscordAnimatedCoversKey = booleanPreferencesKey("discordAnimatedCovers")
 val DiscordAvatarKey = stringPreferencesKey("discordAvatar")
 val DiscordStatusKey = stringPreferencesKey("discordStatus")
 val DiscordButton1TextKey = stringPreferencesKey("discordButton1Text")
@@ -276,7 +346,13 @@ val LastFMUseNowPlaying = booleanPreferencesKey("lastfmUseNowPlaying")
 
 val LastFMUseSendLikes = booleanPreferencesKey("lastfmUseSendLikes")
 
+enum class CanvasArtworkPriority {
+    APPLE_MUSIC,
+    SPOTIFY,
+}
+
 val SpotifyCanvasEnabledKey = booleanPreferencesKey("spotifyCanvasEnabled")
+val CanvasArtworkPriorityKey = stringPreferencesKey("canvasArtworkPriority")
 val EmbedAnimatedCanvasKey = booleanPreferencesKey("embedAnimatedCanvas")
 val SpotifyCookieKey = stringPreferencesKey("spotifyCanvasCookie")
 val TidalCookieKey = stringPreferencesKey("tidalCookie")
@@ -534,6 +610,7 @@ enum class PlayerBackgroundStyle {
     DEFAULT,
     GRADIENT,
     BLUR,
+    GALAXY_BLUR,
 }
 
 val TopSize = stringPreferencesKey("topSize")

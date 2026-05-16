@@ -84,6 +84,15 @@ object TidalAudioProvider {
         val isLiveManifest: Boolean = false,
     )
 
+    data class CandidateMetadata(
+        val trackId: String,
+        val title: String,
+        val artist: String,
+        val album: String?,
+        val isrc: String?,
+        val durationMs: Long?,
+    )
+
     open class TidalAudioResolutionException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
     class TidalRateLimitedException(
@@ -362,6 +371,23 @@ object TidalAudioProvider {
     }
 
     fun isTidalTrackId(value: String): Boolean = value.toTidalTrackIdOrNull() != null
+
+    fun searchCandidates(
+        query: Query,
+        limit: Int = 8,
+    ): List<CandidateMetadata> =
+        findCandidateTracks(query)
+            .take(limit.coerceAtLeast(1))
+            .map { track ->
+                CandidateMetadata(
+                    trackId = track.trackId,
+                    title = track.title,
+                    artist = track.artistNames.joinToString(", "),
+                    album = track.album,
+                    isrc = track.isrc,
+                    durationMs = track.durationMs,
+                )
+            }
 
     fun isLiveManifestUri(value: String?): Boolean =
         value

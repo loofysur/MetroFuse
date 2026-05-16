@@ -225,6 +225,7 @@ class AppleMusicWrapperDataSource(
                         title = title,
                         artists = artists,
                         album = uri.getQueryParameter(PARAM_ALBUM)?.takeIf { it.isNotBlank() },
+                        isrc = null,
                         durationMs = uri.getQueryParameter(PARAM_DURATION_MS)?.toLongOrNull(),
                         explicit = uri.getQueryParameter(PARAM_EXPLICIT)?.toBooleanStrictOrNull(),
                     ),

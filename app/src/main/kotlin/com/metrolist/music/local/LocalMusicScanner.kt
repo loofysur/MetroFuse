@@ -178,6 +178,7 @@ object LocalMusicScanner {
                     } else {
                         scannedThumbnailUrl
                     }
+                val mixMetadata = AudioMixMetadataReader.read(context, uri)
                 val artists =
                     artistNames.map { artistName ->
                         ArtistEntity(
@@ -221,6 +222,9 @@ object LocalMusicScanner {
                         dateDownload = existingSong?.song?.dateDownload ?: dateAdded,
                         isLocal = true,
                         isDownloaded = true,
+                        bpm = existingSong?.song?.bpm ?: mixMetadata?.bpm,
+                        keySignature = existingSong?.song?.keySignature ?: mixMetadata?.keySignature,
+                        mixMetadataSource = existingSong?.song?.mixMetadataSource ?: mixMetadata?.let { "metadata" },
                     )
                 val format =
                     FormatEntity(
@@ -318,6 +322,7 @@ object LocalMusicScanner {
                 val mimeType = cursor.getStringOrNull(mimeColumn)?.takeIf { it.isNotBlank() } ?: "audio/*"
                 val size = cursor.getLongOrNull(sizeColumn)?.coerceAtLeast(0L) ?: 0L
                 val thumbnailUrl = existingSong?.song?.thumbnailUrl
+                val mixMetadata = AudioMixMetadataReader.read(context, uri)
                 val artists =
                     artistNames.map { artistName ->
                         ArtistEntity(
@@ -357,6 +362,9 @@ object LocalMusicScanner {
                         dateDownload = existingSong?.song?.dateDownload ?: dateAdded,
                         isLocal = true,
                         isDownloaded = true,
+                        bpm = existingSong?.song?.bpm ?: mixMetadata?.bpm,
+                        keySignature = existingSong?.song?.keySignature ?: mixMetadata?.keySignature,
+                        mixMetadataSource = existingSong?.song?.mixMetadataSource ?: mixMetadata?.let { "metadata" },
                     )
                 val format =
                     FormatEntity(

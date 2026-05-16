@@ -19,6 +19,9 @@ if (localPropertiesFile.exists()) {
 }
 
 val baseApplicationId = "com.metrofuse.music"
+val metroFuseVersionCode = 301
+val metroFuseVersionName = "3.1"
+val metroFuseUpdateRepository = "956tris/MetroFuse"
 val applicationIdOverride = System.getenv("METROLIST_APPLICATION_ID")?.takeIf { it.isNotBlank() }
 val appNameOverride = System.getenv("METROLIST_APP_NAME")?.takeIf { it.isNotBlank() }
 val debugKeystorePathOverride = System.getenv("METROLIST_DEBUG_KEYSTORE_PATH")?.takeIf { it.isNotBlank() }
@@ -94,8 +97,8 @@ android {
         applicationId = applicationIdOverride ?: baseApplicationId
         minSdk = 26
         targetSdk = 36
-        versionCode = 146
-        versionName = "13.4.2"
+        versionCode = metroFuseVersionCode
+        versionName = metroFuseVersionName
         resValue("string", "app_name", appNameOverride ?: "MetroFuse")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -108,6 +111,7 @@ android {
         buildConfigField("String", "LASTFM_API_KEY", "\"$lastFmKey\"")
         buildConfigField("String", "LASTFM_SECRET", "\"$lastFmSecret\"")
         buildConfigField("String", "ARCHITECTURE", "\"universal\"")
+        buildConfigField("String", "UPDATE_REPOSITORY", "\"$metroFuseUpdateRepository\"")
     }
 
     flavorDimensions += listOf("variant")

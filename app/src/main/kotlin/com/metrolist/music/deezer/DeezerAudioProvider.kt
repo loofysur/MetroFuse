@@ -77,6 +77,15 @@ object DeezerAudioProvider {
         val expiresAtMs: Long,
     )
 
+    data class CandidateMetadata(
+        val trackId: String,
+        val title: String,
+        val artist: String,
+        val album: String?,
+        val isrc: String?,
+        val durationMs: Long?,
+    )
+
     class DeezerResolutionException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
     private data class MatchedTrack(
@@ -170,7 +179,30 @@ object DeezerAudioProvider {
             .build()
     }
 
+    fun searchCandidates(
+        query: Query,
+        limit: Int = 8,
+    ): List<CandidateMetadata> {
+        val results = linkedMapOf<String, CandidateMetadata>()
+        resolveIsrcTrack(query)?.let { track ->
+            results[track.trackId] = track.toCandidateMetadata()
+        }
+        for (term in searchTerms(query)) {
+            val array = searchTracks(term) ?: continue
+            for (index in 0 until array.length()) {
+                val candidate = array.optJSONObject(index)?.toCandidateMetadata() ?: continue
+                results.putIfAbsent(candidate.trackId, candidate)
+                if (results.size >= limit) return results.values.toList()
+            }
+        }
+        return results.values.toList()
+    }
+
     private fun findBestTrack(query: Query): MatchedTrack? {
+        resolveIsrcTrack(query)?.let { track ->
+            Timber.tag("DeezerAudio").i("Resolved Deezer track ${track.trackId} through ISRC for ${query.title}")
+            return track
+        }
         resolveSongLinkDeezerTrackId(query)?.let { trackId ->
             Timber.tag("DeezerAudio").i("Resolved Deezer track $trackId through song.link for ${query.title}")
             return query.toDirectMatchedTrack(trackId)
@@ -180,6 +212,42 @@ object DeezerAudioProvider {
             selectBestTrack(results, query)?.let { return it }
         }
         return null
+    }
+
+    private fun resolveIsrcTrack(query: Query): MatchedTrack? {
+        val isrc = query.isrc
+            ?.trim()
+            ?.uppercase(Locale.US)
+            ?.takeIf { it.matches(Regex("[A-Z]{2}[A-Z0-9]{3}[0-9]{7}")) }
+            ?: return null
+        val url = "https://api.deezer.com/track/isrc:$isrc".toHttpUrl()
+        val request =
+            Request
+                .Builder()
+                .url(url)
+                .get()
+                .header("Accept", "application/json")
+                .header("User-Agent", BROWSER_USER_AGENT)
+                .build()
+        return runCatching {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use null
+                val payload = response.body.string().takeIf { it.isNotBlank() } ?: return@use null
+                val obj = JSONObject(payload)
+                if (obj.has("error")) return@use null
+                val trackId = obj.stringOrNull("id") ?: return@use null
+                MatchedTrack(
+                    trackId = trackId,
+                    title = obj.stringOrNull("title").orEmpty(),
+                    artistNames = obj.collectArtistNames(),
+                    album = obj.optJSONObject("album")?.stringOrNull("title"),
+                    isrc = isrc,
+                    durationMs = obj.longOrNull("duration")?.times(1000L),
+                )
+            }
+        }.onFailure { error ->
+            Timber.tag("DeezerAudio").d(error, "Deezer ISRC lookup failed for $isrc")
+        }.getOrNull()
     }
 
     private fun searchTracks(term: String): JSONArray? {
@@ -547,11 +615,36 @@ object DeezerAudioProvider {
             durationMs = durationMs,
         )
 
+    private fun MatchedTrack.toCandidateMetadata(): CandidateMetadata =
+        CandidateMetadata(
+            trackId = trackId,
+            title = title,
+            artist = artistNames.joinToString(", "),
+            album = album,
+            isrc = isrc,
+            durationMs = durationMs,
+        )
+
+    private fun JSONObject.toCandidateMetadata(): CandidateMetadata? {
+        val trackId = stringOrNull("id") ?: return null
+        val title = stringOrNull("title") ?: return null
+        val artists = collectArtistNames()
+        return CandidateMetadata(
+            trackId = trackId,
+            title = title,
+            artist = artists.joinToString(", "),
+            album = optJSONObject("album")?.stringOrNull("title"),
+            isrc = stringOrNull("isrc"),
+            durationMs = longOrNull("duration")?.times(1000L),
+        )
+    }
+
     private fun Query.trackCacheKey(): String =
         listOf(
             title.normalized(),
             artists.joinToString(",") { it.normalized() },
             album.normalized(),
+            isrc?.trim()?.uppercase(Locale.US).orEmpty(),
             durationMs?.div(1000L)?.toString().orEmpty(),
         ).joinToString("::")
 

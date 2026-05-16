@@ -40,15 +40,16 @@ object Updater {
     private var cachedAllReleases: List<ReleaseInfo> = emptyList()
     
     private const val CHECK_INTERVAL_MILLIS = 2 * 60 * 60 * 1000L // 2 hours
-    private const val GITHUB_API_BASE = "https://api.github.com/repos/MetrolistGroup/Metrolist"
+    private val githubApiBase = "https://api.github.com/repos/${BuildConfig.UPDATE_REPOSITORY}"
+    private val versionNumberRegex = Regex("\\d+")
 
     /**
      * Compares two version strings.
      * Returns: 1 if v1 > v2, -1 if v1 < v2, 0 if equal
      */
     fun compareVersions(v1: String, v2: String): Int {
-        val v1Parts = v1.removePrefix("v").split(".").map { it.toIntOrNull() ?: 0 }
-        val v2Parts = v2.removePrefix("v").split(".").map { it.toIntOrNull() ?: 0 }
+        val v1Parts = versionParts(v1)
+        val v2Parts = versionParts(v2)
         val maxLength = maxOf(v1Parts.size, v2Parts.size)
         
         for (i in 0 until maxLength) {
@@ -60,6 +61,15 @@ object Updater {
             }
         }
         return 0
+    }
+
+    private fun versionParts(version: String): List<Int> {
+        val parts = versionNumberRegex
+            .findAll(version)
+            .mapNotNull { it.value.toIntOrNull() }
+            .toList()
+
+        return parts.ifEmpty { listOf(0) }
     }
 
     /**
@@ -90,32 +100,61 @@ object Updater {
             val name = asset.getString("name")
             
             // Skip non-APK files
-            if (!name.endsWith(".apk")) continue
+            if (!name.lowercase().endsWith(".apk")) continue
             
             val downloadUrl = asset.getString("browser_download_url")
             val size = asset.getLong("size")
+            val (arch, variant) = inferAssetTarget(name) ?: continue
             
-            // Parse architecture and variant from filename
-            val (arch, variant) = when {
-                name == "Metrolist.apk" -> "universal" to "foss"
-                name == "Metrolist-with-Google-Cast.apk" -> "universal" to "gms"
-                name.startsWith("app-") && name.endsWith("-release.apk") -> {
-                    val arch = name.removePrefix("app-").removeSuffix("-release.apk")
-                    arch to "foss"
-                }
-                name.startsWith("app-") && name.endsWith("-with-Google-Cast.apk") -> {
-                    val arch = name.removePrefix("app-").removeSuffix("-with-Google-Cast.apk")
-                    arch to "gms"
-                }
-                else -> null to null
-            }
-            
-            if (arch != null && variant != null) {
-                assets.add(ReleaseAsset(name, downloadUrl, size, arch, variant))
-            }
+            assets.add(ReleaseAsset(name, downloadUrl, size, arch, variant))
         }
         
         return assets
+    }
+
+    private fun inferAssetTarget(name: String): Pair<String, String>? {
+        val lowerName = name.lowercase()
+        if (!lowerName.endsWith(".apk")) return null
+        if (lowerName.contains("debug")) return null
+
+        val variant = when {
+            lowerName == "metrolist-with-google-cast.apk" ||
+                lowerName.contains("with-google-cast") ||
+                lowerName.contains("google-cast") ||
+                lowerName.contains("gms") -> "gms"
+            lowerName.contains("izzy") -> return null
+            else -> "foss"
+        }
+
+        val architecture = when {
+            lowerName == "metrolist.apk" || lowerName == "metrofuse.apk" -> "universal"
+            lowerName.contains("universal") -> "universal"
+            lowerName.contains("arm64-v8a") || lowerName.contains("arm64") -> "arm64-v8a"
+            lowerName.contains("armeabi-v7a") || lowerName.contains("armeabi") -> "armeabi-v7a"
+            lowerName.contains("x86_64") || lowerName.contains("x86-64") -> "x86_64"
+            lowerName.contains("x86") -> "x86"
+            lowerName.startsWith("app-") && lowerName.endsWith("-release.apk") ->
+                lowerName.removePrefix("app-").removeSuffix("-release.apk")
+            lowerName.startsWith("metrofuse") -> "universal"
+            else -> return null
+        }
+
+        return architecture to variant
+    }
+
+    private fun parseReleaseInfo(json: JSONObject): ReleaseInfo {
+        val tagName = json.getString("tag_name")
+        val displayName = json.optString("name")
+            .trim()
+            .ifBlank { tagName }
+
+        return ReleaseInfo(
+            tagName = tagName,
+            versionName = displayName,
+            description = json.optString("body"),
+            releaseDate = json.getString("published_at"),
+            assets = parseAssets(json.getJSONArray("assets"))
+        )
     }
 
     /**
@@ -129,17 +168,11 @@ object Updater {
                     return@runCatching cachedReleaseInfo!!
                 }
                 
-                val response = client.get("$GITHUB_API_BASE/releases/latest")
+                val response = client.get("$githubApiBase/releases/latest")
                     .bodyAsText()
                 val json = JSONObject(response)
                 
-                val releaseInfo = ReleaseInfo(
-                    tagName = json.getString("tag_name"),
-                    versionName = json.getString("name"),
-                    description = json.getString("body"),
-                    releaseDate = json.getString("published_at"),
-                    assets = parseAssets(json.getJSONArray("assets"))
-                )
+                val releaseInfo = parseReleaseInfo(json)
                 
                 cachedReleaseInfo = releaseInfo
                 lastCheckTime = System.currentTimeMillis()
@@ -162,7 +195,7 @@ object Updater {
                 var hasMore = true
                 
                 while (hasMore && page <= 10) { // Limit to 10 pages
-                    val response = client.get("$GITHUB_API_BASE/releases?page=$page&per_page=30")
+                    val response = client.get("$githubApiBase/releases?page=$page&per_page=30")
                         .bodyAsText()
                     val json = JSONArray(response)
                     
@@ -173,13 +206,7 @@ object Updater {
                     
                     for (i in 0 until json.length()) {
                         val releaseObj = json.getJSONObject(i)
-                        releases.add(ReleaseInfo(
-                            tagName = releaseObj.getString("tag_name"),
-                            versionName = releaseObj.getString("name"),
-                            description = releaseObj.getString("body"),
-                            releaseDate = releaseObj.getString("published_at"),
-                            assets = parseAssets(releaseObj.getJSONArray("assets"))
-                        ))
+                        releases.add(parseReleaseInfo(releaseObj))
                     }
                     
                     page++
@@ -196,9 +223,14 @@ object Updater {
     fun getDownloadUrlForCurrentVariant(releaseInfo: ReleaseInfo): String? {
         val (currentArch, currentVariant) = getCurrentAppVariant()
         
-        return releaseInfo.assets
+        val matchingAsset = releaseInfo.assets
             .find { it.architecture == currentArch && it.variant == currentVariant }
-            ?.downloadUrl
+            ?: releaseInfo.assets.find { it.architecture == "universal" && it.variant == currentVariant }
+            ?: releaseInfo.assets.find { it.variant == currentVariant }
+            ?: releaseInfo.assets.find { it.architecture == "universal" }
+            ?: releaseInfo.assets.firstOrNull()
+
+        return matchingAsset?.downloadUrl
     }
 
     /**
@@ -221,7 +253,7 @@ object Updater {
                 if (!shouldFetch && cachedReleaseInfo != null) {
                     val hasUpdate = isUpdateAvailable(
                         BuildConfig.VERSION_NAME,
-                        cachedReleaseInfo!!.versionName
+                        cachedReleaseInfo!!.tagName
                     )
                     return@runCatching cachedReleaseInfo!! to hasUpdate
                 }
@@ -231,7 +263,7 @@ object Updater {
                     val releaseInfo = result.getOrThrow()
                     val hasUpdate = isUpdateAvailable(
                         BuildConfig.VERSION_NAME,
-                        releaseInfo.versionName
+                        releaseInfo.tagName
                     )
                     releaseInfo to hasUpdate
                 } else {

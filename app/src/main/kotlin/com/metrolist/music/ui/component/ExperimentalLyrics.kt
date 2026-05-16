@@ -297,7 +297,9 @@ fun ExperimentalLyrics(
 
     val expressiveAccent = when (playerBackground) {
         PlayerBackgroundStyle.DEFAULT -> MaterialTheme.colorScheme.primary
-        PlayerBackgroundStyle.BLUR, PlayerBackgroundStyle.GRADIENT -> Color.White
+        PlayerBackgroundStyle.BLUR,
+        PlayerBackgroundStyle.GALAXY_BLUR,
+        PlayerBackgroundStyle.GRADIENT -> Color.White
     }
 
     var activeLineIndices by remember { mutableStateOf(emptySet<Int>()) }

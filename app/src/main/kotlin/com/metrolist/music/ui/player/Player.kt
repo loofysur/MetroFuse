@@ -136,6 +136,8 @@ import com.metrolist.music.LocalDownloadUtil
 import com.metrolist.music.LocalListenTogetherManager
 import com.metrolist.music.LocalPlayerConnection
 import com.metrolist.music.R
+import com.metrolist.music.constants.CanvasArtworkPriority
+import com.metrolist.music.constants.CanvasArtworkPriorityKey
 import com.metrolist.music.constants.CropAlbumArtKey
 import com.metrolist.music.constants.DarkModeKey
 import com.metrolist.music.constants.HidePlayerThumbnailKey
@@ -210,6 +212,12 @@ private const val DEEZER_FALLBACK_ITAG = 100_033
 private const val SOUNDCLOUD_FALLBACK_ITAG = 100_031
 private const val INSTAGRAM_FALLBACK_ITAG = 100_041
 private const val LOCAL_FILE_ITAG = -2000
+private val AppleMusicCanvasHeaders =
+    mapOf(
+        "Origin" to "https://music.apple.com",
+        "Referer" to "https://music.apple.com/",
+        "User-Agent" to "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 Chrome/147 Mobile Safari/537.36",
+    )
 
 private val YouTubeAudioItags = setOf(139, 140, 141, 249, 250, 251, 256, 258, 325, 328, 338, 599, 600, 774)
 
@@ -337,6 +345,10 @@ fun BottomSheetPlayer(
     val playerInlineLyricsEnabled by rememberPreference(PlayerInlineLyricsKey, defaultValue = true)
     val spotifyCanvasEnabled by rememberPreference(SpotifyCanvasEnabledKey, false)
     val spotifyCookie by rememberPreference(SpotifyCookieKey, "")
+    val canvasArtworkPriority by rememberEnumPreference(
+        CanvasArtworkPriorityKey,
+        CanvasArtworkPriority.APPLE_MUSIC,
+    )
 
     val isSystemInDarkTheme = isSystemInDarkTheme()
     val darkTheme by rememberEnumPreference(DarkModeKey, defaultValue = DarkMode.AUTO)
@@ -348,7 +360,9 @@ fun BottomSheetPlayer(
     val shouldUseDarkButtonColors =
         remember(playerBackground, useDarkTheme) {
             when (playerBackground) {
-                PlayerBackgroundStyle.BLUR, PlayerBackgroundStyle.GRADIENT -> true
+                PlayerBackgroundStyle.BLUR,
+                PlayerBackgroundStyle.GALAXY_BLUR,
+                PlayerBackgroundStyle.GRADIENT -> true
                 PlayerBackgroundStyle.DEFAULT -> useDarkTheme
             }
         }
@@ -363,7 +377,9 @@ fun BottomSheetPlayer(
             val insetsController = WindowCompat.getInsetsController(window, window.decorView)
 
             when (playerBackground) {
-                PlayerBackgroundStyle.BLUR, PlayerBackgroundStyle.GRADIENT -> {
+                PlayerBackgroundStyle.BLUR,
+                PlayerBackgroundStyle.GALAXY_BLUR,
+                PlayerBackgroundStyle.GRADIENT -> {
                     insetsController.isAppearanceLightStatusBars = false
                 }
 
@@ -414,8 +430,10 @@ fun BottomSheetPlayer(
 
     val playbackState by playerConnection.playbackState.collectAsStateWithLifecycle()
     val mediaMetadata by playerConnection.mediaMetadata.collectAsStateWithLifecycle()
+    val preferredArtworkUrl by playerConnection.service.currentPreferredArtworkUrl.collectAsStateWithLifecycle()
     val currentSong by playerConnection.currentSong.collectAsStateWithLifecycle(initialValue = null)
     val currentLyrics by playerConnection.currentLyrics.collectAsStateWithLifecycle(initialValue = null)
+    val appleTallCanvasUrl by playerConnection.service.currentAppleTallCanvasUrl.collectAsStateWithLifecycle()
     val embeddedCanvasUrl by playerConnection.service.currentEmbeddedCanvasUrl.collectAsStateWithLifecycle()
     val currentFormat by playerConnection.currentFormat.collectAsStateWithLifecycle(initialValue = null)
     val displayFormat =
@@ -429,6 +447,14 @@ fun BottomSheetPlayer(
     val canSkipPrevious by playerConnection.canSkipPrevious.collectAsStateWithLifecycle()
     val canSkipNext by playerConnection.canSkipNext.collectAsStateWithLifecycle()
     val isMuted by playerConnection.isMuted.collectAsStateWithLifecycle()
+    val displayArtworkUrl =
+        remember(preferredArtworkUrl, mediaMetadata?.thumbnailUrl) {
+            preferredArtworkUrl ?: mediaMetadata?.thumbnailUrl
+        }
+    val playerColorArtworkUrl =
+        remember(mediaMetadata?.thumbnailUrl, displayArtworkUrl) {
+            mediaMetadata?.thumbnailUrl ?: displayArtworkUrl
+        }
     val playerQualityLabel =
         remember(displayFormat) {
             displayFormat?.playerQualityLabel()
@@ -521,8 +547,21 @@ fun BottomSheetPlayer(
                 SpotifyCanvasMedia(url = url, headers = emptyMap())
             }
         }
+    val appleCanvasBackground =
+        remember(appleTallCanvasUrl) {
+            appleTallCanvasUrl?.takeIf { it.isNotBlank() }?.let { url ->
+                SpotifyCanvasMedia(url = url, headers = AppleMusicCanvasHeaders)
+            }
+        }
     val shouldResolveSpotifyCanvasBackground =
-        spotifyCanvasEnabled && state.progress > 0.1f && !isLocalMedia && embeddedCanvasBackground == null
+        spotifyCanvasEnabled &&
+            state.progress > 0.1f &&
+            !isLocalMedia &&
+            embeddedCanvasBackground == null &&
+            (
+                canvasArtworkPriority == CanvasArtworkPriority.SPOTIFY ||
+                    appleCanvasBackground == null
+            )
     val spotifyCanvasBackground =
         rememberSpotifyCanvasMedia(
             mediaMetadata = mediaMetadata,
@@ -530,8 +569,17 @@ fun BottomSheetPlayer(
             cookie = spotifyCookie,
             shouldLoad = shouldResolveSpotifyCanvasBackground,
         )
-    val canvasBackground = embeddedCanvasBackground ?: spotifyCanvasBackground
-    val shouldShowCanvasBackground = canvasBackground != null && state.progress > 0.1f
+    val canvasBackground =
+        when (canvasArtworkPriority) {
+            CanvasArtworkPriority.APPLE_MUSIC -> embeddedCanvasBackground ?: appleCanvasBackground ?: spotifyCanvasBackground
+            CanvasArtworkPriority.SPOTIFY -> embeddedCanvasBackground ?: spotifyCanvasBackground ?: appleCanvasBackground
+        }
+    val isAppleCanvasBackground =
+        canvasBackground != null &&
+            appleCanvasBackground != null &&
+            canvasBackground.url == appleCanvasBackground.url
+    val playerCanvasBackground = canvasBackground?.takeUnless { isAppleCanvasBackground }
+    val shouldShowCanvasBackground = playerCanvasBackground != null && state.progress > 0.1f
     val effectivePlayerBackground =
         if (shouldShowCanvasBackground) {
             PlayerBackgroundStyle.BLUR
@@ -642,59 +690,96 @@ fun BottomSheetPlayer(
     var gradientColors by remember {
         mutableStateOf<List<Color>>(emptyList())
     }
+    var galaxyColors by remember {
+        mutableStateOf<List<Color>>(emptyList())
+    }
     val gradientColorsCache = remember { mutableMapOf<String, List<Color>>() }
+    val galaxyColorsCache = remember { mutableMapOf<String, List<Color>>() }
 
     if (!canSkipNext && automix.isNotEmpty()) {
         playerConnection.service.addToQueueAutomix(automix[0], 0)
     }
 
-    val defaultGradientColors = listOf(MaterialTheme.colorScheme.surface, MaterialTheme.colorScheme.surfaceVariant)
     val fallbackColor = MaterialTheme.colorScheme.surface.toArgb()
 
-    LaunchedEffect(mediaMetadata?.id, playerBackground) {
-        if (playerBackground == PlayerBackgroundStyle.GRADIENT) {
-            val currentMetadata = mediaMetadata
-            if (currentMetadata != null && currentMetadata.thumbnailUrl != null) {
-                val cachedColors = gradientColorsCache[currentMetadata.id]
-                if (cachedColors != null) {
-                    gradientColors = cachedColors
-                    return@LaunchedEffect
-                }
-                withContext(Dispatchers.IO) {
-                    val request =
-                        ImageRequest
-                            .Builder(context)
-                            .data(currentMetadata.thumbnailUrl)
-                            .size(100, 100)
-                            .allowHardware(false)
-                            .memoryCacheKey("gradient_${currentMetadata.id}")
-                            .build()
+    LaunchedEffect(mediaMetadata?.id, playerColorArtworkUrl, playerBackground) {
+        if (playerBackground != PlayerBackgroundStyle.GRADIENT) gradientColors = emptyList()
+        if (playerBackground != PlayerBackgroundStyle.GALAXY_BLUR) galaxyColors = emptyList()
+        when (playerBackground) {
+            PlayerBackgroundStyle.GRADIENT,
+            PlayerBackgroundStyle.GALAXY_BLUR -> {
+                val currentMetadata = mediaMetadata
+                val colorArtworkUrl = playerColorArtworkUrl
+                if (currentMetadata != null && colorArtworkUrl != null) {
+                    val artworkColorCacheKey = "${currentMetadata.id}:${colorArtworkUrl.hashCode()}"
+                    val cachedColors =
+                        if (playerBackground == PlayerBackgroundStyle.GRADIENT) {
+                            gradientColorsCache[artworkColorCacheKey]
+                        } else {
+                            galaxyColorsCache[artworkColorCacheKey]
+                        }
+                    if (cachedColors != null) {
+                        if (playerBackground == PlayerBackgroundStyle.GRADIENT) {
+                            gradientColors = cachedColors
+                        } else {
+                            galaxyColors = cachedColors
+                        }
+                        return@LaunchedEffect
+                    }
+                    withContext(Dispatchers.IO) {
+                        val request =
+                            ImageRequest
+                                .Builder(context)
+                                .data(colorArtworkUrl)
+                                .size(100, 100)
+                                .allowHardware(false)
+                                .memoryCacheKey("player_colors_$artworkColorCacheKey")
+                                .build()
 
-                    val result = runCatching { context.imageLoader.execute(request) }.getOrNull()
-                    if (result != null) {
-                        val bitmap = result.image?.toBitmap()
-                        if (bitmap != null) {
-                            val palette =
-                                withContext(Dispatchers.Default) {
-                                    Palette
-                                        .from(bitmap)
-                                        .maximumColorCount(8)
-                                        .resizeBitmapArea(100 * 100)
-                                        .generate()
+                        val result = runCatching { context.imageLoader.execute(request) }.getOrNull()
+                        if (result != null) {
+                            val bitmap = result.image?.toBitmap()
+                            if (bitmap != null) {
+                                val palette =
+                                    withContext(Dispatchers.Default) {
+                                        Palette
+                                            .from(bitmap)
+                                            .maximumColorCount(8)
+                                            .resizeBitmapArea(100 * 100)
+                                            .generate()
+                                    }
+                                val extractedColors =
+                                    if (playerBackground == PlayerBackgroundStyle.GRADIENT) {
+                                        PlayerColorExtractor.extractGradientColors(
+                                            palette = palette,
+                                            fallbackColor = fallbackColor,
+                                        )
+                                    } else {
+                                        PlayerColorExtractor.extractGalaxyColors(
+                                            palette = palette,
+                                            fallbackColor = fallbackColor,
+                                        )
                                 }
-                            val extractedColors =
-                                PlayerColorExtractor.extractGradientColors(
-                                    palette = palette,
-                                    fallbackColor = fallbackColor,
-                                )
-                            gradientColorsCache[currentMetadata.id] = extractedColors
-                            withContext(Dispatchers.Main) { gradientColors = extractedColors }
+                                if (playerBackground == PlayerBackgroundStyle.GRADIENT) {
+                                    gradientColorsCache[artworkColorCacheKey] = extractedColors
+                                    withContext(Dispatchers.Main) { gradientColors = extractedColors }
+                                } else {
+                                    galaxyColorsCache[artworkColorCacheKey] = extractedColors
+                                    withContext(Dispatchers.Main) { galaxyColors = extractedColors }
+                                }
+                            }
                         }
                     }
+                } else if (playerBackground == PlayerBackgroundStyle.GRADIENT) {
+                    gradientColors = emptyList()
+                } else {
+                    galaxyColors = emptyList()
                 }
             }
-        } else {
-            gradientColors = emptyList()
+            else -> {
+                gradientColors = emptyList()
+                galaxyColors = emptyList()
+            }
         }
     }
 
@@ -703,6 +788,7 @@ fun BottomSheetPlayer(
             when (effectivePlayerBackground) {
                 PlayerBackgroundStyle.DEFAULT -> MaterialTheme.colorScheme.onBackground
                 PlayerBackgroundStyle.BLUR -> Color.White
+                PlayerBackgroundStyle.GALAXY_BLUR -> Color.White
                 PlayerBackgroundStyle.GRADIENT -> Color.White
             },
         label = "TextBackgroundColor",
@@ -713,6 +799,7 @@ fun BottomSheetPlayer(
             when (effectivePlayerBackground) {
                 PlayerBackgroundStyle.DEFAULT -> MaterialTheme.colorScheme.surface
                 PlayerBackgroundStyle.BLUR -> Color.Black
+                PlayerBackgroundStyle.GALAXY_BLUR -> Color.Black
                 PlayerBackgroundStyle.GRADIENT -> Color.Black
             },
         label = "icBackgroundColor",
@@ -721,6 +808,7 @@ fun BottomSheetPlayer(
     val (textButtonColor, iconButtonColor) =
         when {
             effectivePlayerBackground == PlayerBackgroundStyle.BLUR ||
+                effectivePlayerBackground == PlayerBackgroundStyle.GALAXY_BLUR ||
                 effectivePlayerBackground == PlayerBackgroundStyle.GRADIENT -> {
                 when (playerButtonsStyle) {
                     PlayerButtonsStyle.DEFAULT -> {
@@ -774,6 +862,7 @@ fun BottomSheetPlayer(
     val (sideButtonContainerColor, sideButtonContentColor) =
         when {
             effectivePlayerBackground == PlayerBackgroundStyle.BLUR ||
+                effectivePlayerBackground == PlayerBackgroundStyle.GALAXY_BLUR ||
                 effectivePlayerBackground == PlayerBackgroundStyle.GRADIENT -> {
                 when (playerButtonsStyle) {
                     PlayerButtonsStyle.DEFAULT -> {
@@ -1034,7 +1123,9 @@ fun BottomSheetPlayer(
 
     val bottomSheetBackgroundColor =
         when (effectivePlayerBackground) {
-            PlayerBackgroundStyle.BLUR, PlayerBackgroundStyle.GRADIENT -> {
+            PlayerBackgroundStyle.BLUR,
+            PlayerBackgroundStyle.GALAXY_BLUR,
+            PlayerBackgroundStyle.GRADIENT -> {
                 Color.Black
             }
 
@@ -1062,7 +1153,7 @@ fun BottomSheetPlayer(
                 when (playerBackground) {
                     PlayerBackgroundStyle.BLUR -> {
                         AnimatedContent(
-                            targetState = mediaMetadata?.thumbnailUrl,
+                            targetState = displayArtworkUrl,
                             transitionSpec = {
                                 fadeIn(tween(800)).togetherWith(fadeOut(tween(800)))
                             },
@@ -1093,6 +1184,16 @@ fun BottomSheetPlayer(
                                     )
                                 }
                             }
+                        }
+                    }
+
+                    PlayerBackgroundStyle.GALAXY_BLUR -> {
+                        Box(modifier = Modifier.alpha(backgroundAlpha)) {
+                            GalaxyStarOverlay(
+                                modifier = Modifier.fillMaxSize(),
+                                intensity = 1f,
+                                skyColors = galaxyColors,
+                            )
                         }
                     }
 
@@ -1135,7 +1236,7 @@ fun BottomSheetPlayer(
                     }
                 }
 
-                canvasBackground?.takeIf { shouldShowCanvasBackground }?.let { media ->
+                playerCanvasBackground?.takeIf { shouldShowCanvasBackground }?.let { media ->
                     SpotifyCanvasVideoBackground(
                         media = media,
                         shouldPlay = state.isExpanded && backgroundAlpha > 0.1f && effectiveIsPlaying,
@@ -1143,6 +1244,7 @@ fun BottomSheetPlayer(
                             Modifier
                                 .fillMaxSize()
                                 .alpha(backgroundAlpha),
+                        scrimAlpha = 0.16f,
                     )
                 }
             }
@@ -1222,7 +1324,7 @@ fun BottomSheetPlayer(
                                 }
                             } else {
                                 AsyncImage(
-                                    model = mediaMetadata.thumbnailUrl,
+                                    model = displayArtworkUrl,
                                     contentDescription = null,
                                     contentScale = if (cropAlbumArt) ContentScale.Crop else ContentScale.Fit,
                                     modifier =

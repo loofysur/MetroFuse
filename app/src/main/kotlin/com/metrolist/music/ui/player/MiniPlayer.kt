@@ -188,6 +188,9 @@ private fun NewMiniPlayer(
     )
     val context = LocalContext.current
     var gradientColors by remember { mutableStateOf<List<Color>>(emptyList()) }
+    var galaxyColors by remember { mutableStateOf<List<Color>>(emptyList()) }
+    val gradientColorsCache = remember { mutableMapOf<String, List<Color>>() }
+    val galaxyColorsCache = remember { mutableMapOf<String, List<Color>>() }
     val isSystemInDarkTheme = isSystemInDarkTheme()
     val darkTheme by rememberEnumPreference(DarkModeKey, defaultValue = DarkMode.AUTO)
     val useDarkTheme =
@@ -198,8 +201,17 @@ private fun NewMiniPlayer(
     // Player states - only collect what's needed at this level
     val playbackState by playerConnection.playbackState.collectAsStateWithLifecycle()
     val mediaMetadata by playerConnection.mediaMetadata.collectAsStateWithLifecycle()
+    val preferredArtworkUrl by playerConnection.service.currentPreferredArtworkUrl.collectAsStateWithLifecycle()
     val canSkipNext by playerConnection.canSkipNext.collectAsStateWithLifecycle()
     val canSkipPrevious by playerConnection.canSkipPrevious.collectAsStateWithLifecycle()
+    val displayArtworkUrl =
+        remember(preferredArtworkUrl, mediaMetadata?.thumbnailUrl) {
+            preferredArtworkUrl ?: mediaMetadata?.thumbnailUrl
+        }
+    val playerColorArtworkUrl =
+        remember(mediaMetadata?.thumbnailUrl, displayArtworkUrl) {
+            mediaMetadata?.thumbnailUrl ?: displayArtworkUrl
+        }
 
     // Cast state - safely access castConnectionHandler to prevent crashes during service lifecycle changes
     val castHandler =
@@ -247,11 +259,31 @@ private fun NewMiniPlayer(
             (600 / (1f + kotlin.math.exp(-(-11.44748 * swipeSensitivity + 9.04945)))).roundToInt()
         }
 
-    LaunchedEffect(mediaMetadata?.id, miniPlayerBackground) {
+    LaunchedEffect(mediaMetadata?.id, playerColorArtworkUrl, miniPlayerBackground) {
         gradientColors = emptyList()
-        if (miniPlayerBackground == MiniPlayerBackgroundStyle.GRADIENT) {
-            val url = mediaMetadata?.thumbnailUrl
-            if (url != null) {
+        galaxyColors = emptyList()
+        if (
+            miniPlayerBackground == MiniPlayerBackgroundStyle.GRADIENT ||
+            miniPlayerBackground == MiniPlayerBackgroundStyle.GALAXY_BLUR
+        ) {
+            val url = playerColorArtworkUrl
+            val mediaId = mediaMetadata?.id
+            if (url != null && mediaId != null) {
+                val artworkColorCacheKey = "$mediaId:${url.hashCode()}"
+                val cachedColors =
+                    if (miniPlayerBackground == MiniPlayerBackgroundStyle.GRADIENT) {
+                        gradientColorsCache[artworkColorCacheKey]
+                    } else {
+                        galaxyColorsCache[artworkColorCacheKey]
+                    }
+                if (cachedColors != null) {
+                    if (miniPlayerBackground == MiniPlayerBackgroundStyle.GRADIENT) {
+                        gradientColors = cachedColors
+                    } else {
+                        galaxyColors = cachedColors
+                    }
+                    return@LaunchedEffect
+                }
                 withContext(Dispatchers.IO) {
                     val request = ImageRequest.Builder(context)
                         .data(url)
@@ -267,16 +299,31 @@ private fun NewMiniPlayer(
                                 .resizeBitmapArea(100 * 100)
                                 .generate()
                         }
-                        val extracted = PlayerColorExtractor.extractGradientColors(
-                            palette = palette,
-                            fallbackColor = 0xFF000000.toInt(),
-                        )
+                        val extracted =
+                            if (miniPlayerBackground == MiniPlayerBackgroundStyle.GRADIENT) {
+                                PlayerColorExtractor.extractGradientColors(
+                                    palette = palette,
+                                    fallbackColor = 0xFF000000.toInt(),
+                                )
+                            } else {
+                                PlayerColorExtractor.extractGalaxyColors(
+                                    palette = palette,
+                                    fallbackColor = 0xFF000000.toInt(),
+                                )
+                            }
                         withContext(Dispatchers.Main) {
-                            gradientColors = extracted
+                            if (miniPlayerBackground == MiniPlayerBackgroundStyle.GRADIENT) {
+                                gradientColorsCache[artworkColorCacheKey] = extracted
+                                gradientColors = extracted
+                            } else {
+                                galaxyColorsCache[artworkColorCacheKey] = extracted
+                                galaxyColors = extracted
+                            }
                         }
                     } else {
                         withContext(Dispatchers.Main) {
                             gradientColors = emptyList()
+                            galaxyColors = emptyList()
                         }
                     }
                 }
@@ -291,11 +338,13 @@ private fun NewMiniPlayer(
         MiniPlayerBackgroundStyle.DEFAULT    -> MaterialTheme.colorScheme.surfaceContainer
         MiniPlayerBackgroundStyle.TRANSPARENT -> Color.Black.copy(alpha = 0.25f)
         MiniPlayerBackgroundStyle.BLUR       -> MaterialTheme.colorScheme.surfaceContainer
+        MiniPlayerBackgroundStyle.GALAXY_BLUR -> MaterialTheme.colorScheme.surfaceContainer
         MiniPlayerBackgroundStyle.GRADIENT   -> MaterialTheme.colorScheme.surfaceContainer
         MiniPlayerBackgroundStyle.PURE_BLACK -> Color.Black
     }
     val forceLightColors = !useDarkTheme && (miniPlayerBackground == MiniPlayerBackgroundStyle.PURE_BLACK ||
             miniPlayerBackground == MiniPlayerBackgroundStyle.BLUR ||
+            miniPlayerBackground == MiniPlayerBackgroundStyle.GALAXY_BLUR ||
             miniPlayerBackground == MiniPlayerBackgroundStyle.GRADIENT)
 
     val primaryColor = if (forceLightColors) Color.White else MaterialTheme.colorScheme.primary
@@ -390,9 +439,13 @@ private fun NewMiniPlayer(
                     ),
         ) {
             when (miniPlayerBackground) {
-                MiniPlayerBackgroundStyle.BLUR -> {
-                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                        mediaMetadata?.thumbnailUrl?.let { url ->
+                MiniPlayerBackgroundStyle.BLUR,
+                MiniPlayerBackgroundStyle.GALAXY_BLUR -> {
+                    if (
+                        miniPlayerBackground == MiniPlayerBackgroundStyle.BLUR &&
+                        android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S
+                    ) {
+                        displayArtworkUrl?.let { url ->
                             AsyncImage(
                                 model = url,
                                 contentDescription = null,
@@ -404,9 +457,16 @@ private fun NewMiniPlayer(
                             Box(
                                 Modifier
                                     .fillMaxSize()
-                                    .background(Color.Black.copy(alpha = 0.45f)),
+                                    .background(Color.Black.copy(alpha = 0.42f)),
                             )
                         }
+                    }
+                    if (miniPlayerBackground == MiniPlayerBackgroundStyle.GALAXY_BLUR) {
+                        GalaxyStarOverlay(
+                            modifier = Modifier.fillMaxSize(),
+                            intensity = 0.9f,
+                            skyColors = galaxyColors,
+                        )
                     }
                 }
                 MiniPlayerBackgroundStyle.GRADIENT -> {
@@ -438,6 +498,7 @@ private fun NewMiniPlayer(
                     castHandler = castHandler,
                     playerConnection = playerConnection,
                     mediaMetadata = mediaMetadata,
+                    artworkUrl = displayArtworkUrl,
                     primaryColor = primaryColor,
                     outlineColor = outlineColor,
                     listenTogetherManager = listenTogetherManager,
@@ -523,6 +584,7 @@ private fun NewMiniPlayerPlayButton(
     castHandler: CastConnectionHandler?,
     playerConnection: PlayerConnection,
     mediaMetadata: MediaMetadata?,
+    artworkUrl: String?,
     primaryColor: Color,
     outlineColor: Color,
     listenTogetherManager: ListenTogetherManager?,
@@ -598,8 +660,8 @@ private fun NewMiniPlayerPlayButton(
         ) {
             mediaMetadata?.let { metadata ->
                 val thumbnailUrl =
-                    remember(metadata.thumbnailUrl) {
-                        metadata.thumbnailUrl?.resize(120, 120)
+                    remember(artworkUrl) {
+                        artworkUrl?.resize(120, 120)
                     }
                 AsyncImage(
                     model = thumbnailUrl,
@@ -710,8 +772,13 @@ private fun LegacyMiniPlayer(
 
     val playbackState by playerConnection.playbackState.collectAsStateWithLifecycle()
     val mediaMetadata by playerConnection.mediaMetadata.collectAsStateWithLifecycle()
+    val preferredArtworkUrl by playerConnection.service.currentPreferredArtworkUrl.collectAsStateWithLifecycle()
     val canSkipNext by playerConnection.canSkipNext.collectAsStateWithLifecycle()
     val canSkipPrevious by playerConnection.canSkipPrevious.collectAsStateWithLifecycle()
+    val displayArtworkUrl =
+        remember(preferredArtworkUrl, mediaMetadata?.thumbnailUrl) {
+            preferredArtworkUrl ?: mediaMetadata?.thumbnailUrl
+        }
 
     val castHandler =
         remember(playerConnection) {
@@ -863,6 +930,7 @@ private fun LegacyMiniPlayer(
                 mediaMetadata?.let {
                     LegacyMiniMediaInfo(
                         mediaMetadata = it,
+                        artworkUrl = displayArtworkUrl,
                         pureBlack = pureBlack,
                         modifier = Modifier.padding(horizontal = 6.dp),
                     )
@@ -958,6 +1026,7 @@ private fun LegacyPlayPauseButton(
 @Composable
 private fun LegacyMiniMediaInfo(
     mediaMetadata: MediaMetadata,
+    artworkUrl: String?,
     pureBlack: Boolean,
     modifier: Modifier = Modifier,
 ) {
@@ -983,8 +1052,8 @@ private fun LegacyMiniMediaInfo(
             )
 
             val thumbnailUrl =
-                remember(mediaMetadata.thumbnailUrl) {
-                    mediaMetadata.thumbnailUrl?.resize(144, 144)
+                remember(artworkUrl) {
+                    artworkUrl?.resize(144, 144)
                 }
             AsyncImage(
                 model = thumbnailUrl,

@@ -77,6 +77,7 @@ import com.metrolist.music.R
 import com.metrolist.music.constants.DiscordActivityNameKey
 import com.metrolist.music.constants.DiscordActivityTypeKey
 import com.metrolist.music.constants.DiscordAdvancedModeKey
+import com.metrolist.music.constants.DiscordAnimatedCoversKey
 import com.metrolist.music.constants.DiscordAvatarKey
 import com.metrolist.music.constants.DiscordButton1TextKey
 import com.metrolist.music.constants.DiscordButton1VisibleKey
@@ -137,6 +138,7 @@ fun DiscordSettings(
 
     val (discordRPC, onDiscordRPCChange) = rememberPreference(EnableDiscordRPCKey, true)
     val (useDetails, onUseDetailsChange) = rememberPreference(DiscordUseDetailsKey, false)
+    val (animatedCovers, onAnimatedCoversChange) = rememberPreference(DiscordAnimatedCoversKey, false)
     val (advancedMode, onAdvancedModeChange) = rememberPreference(DiscordAdvancedModeKey, false)
 
     var discordStatus by rememberPreference(DiscordStatusKey, "online")
@@ -608,6 +610,32 @@ fun DiscordSettings(
                         },
                     ),
                     Material3SettingsItem(
+                        title = { Text(stringResource(R.string.discord_animated_covers)) },
+                        description = {
+                            Text(stringResource(R.string.discord_animated_covers_description))
+                        },
+                        trailingContent = {
+                            Switch(
+                                checked = animatedCovers,
+                                onCheckedChange = onAnimatedCoversChange,
+                                enabled = isLoggedIn && discordRPC,
+                                thumbContent = {
+                                    Icon(
+                                        painter = painterResource(
+                                            id = if (animatedCovers) R.drawable.check else R.drawable.close
+                                        ),
+                                        contentDescription = null,
+                                        modifier = Modifier.size(SwitchDefaults.IconSize),
+                                    )
+                                }
+                            )
+                        },
+                        enabled = isLoggedIn && discordRPC,
+                        onClick = {
+                            if (isLoggedIn && discordRPC) onAnimatedCoversChange(!animatedCovers)
+                        },
+                    ),
+                    Material3SettingsItem(
                         title = { Text(stringResource(R.string.discord_advanced_mode)) },
                         description = {
                             Text(stringResource(R.string.discord_advanced_mode_description))
@@ -716,7 +744,7 @@ fun DiscordSettings(
                             Material3SettingsItem(
                                 title = { Text(stringResource(R.string.discord_button_1)) },
                                 description = {
-                                    Text(button1Text.ifEmpty { "Listen on YouTube Music" })
+                                    Text(button1Text.ifEmpty { stringResource(R.string.discord_default_button_1) })
                                 },
                                 trailingContent = {
                                     Switch(
@@ -738,7 +766,7 @@ fun DiscordSettings(
                             Material3SettingsItem(
                                 title = { Text(stringResource(R.string.discord_button_2)) },
                                 description = {
-                                    Text(button2Text.ifEmpty { "Visit Metrolist" })
+                                    Text(button2Text.ifEmpty { stringResource(R.string.discord_default_button_2) })
                                 },
                                 trailingContent = {
                                     Switch(
@@ -848,6 +876,9 @@ fun RichPresence(
     button2Visible: Boolean = true,
 ) {
     val context = LocalContext.current
+    val defaultButton1Text = stringResource(R.string.discord_default_button_1)
+    val defaultButton2Text = stringResource(R.string.discord_default_button_2)
+    val defaultButton2Url = stringResource(R.string.discord_default_button_2_url)
 
     val activityLabel =
         when (activityType) {
@@ -971,11 +1002,11 @@ fun RichPresence(
                 val resolvedButton1 =
                     if (song != null) {
                         DiscordRPC.resolveVariables(
-                            button1Text.ifEmpty { "Listen on YouTube Music" },
+                            button1Text.ifEmpty { defaultButton1Text },
                             song,
                         )
                     } else {
-                        button1Text.ifEmpty { "Listen on YouTube Music" }
+                        button1Text.ifEmpty { defaultButton1Text }
                     }
                 OutlinedButton(
                     enabled = song != null,
@@ -997,18 +1028,18 @@ fun RichPresence(
                 val resolvedButton2 =
                     if (song != null) {
                         DiscordRPC.resolveVariables(
-                            button2Text.ifEmpty { "Visit Metrolist" },
+                            button2Text.ifEmpty { defaultButton2Text },
                             song,
                         )
                     } else {
-                        button2Text.ifEmpty { "Visit Metrolist" }
+                        button2Text.ifEmpty { defaultButton2Text }
                     }
                 OutlinedButton(
                     onClick = {
                         val intent =
                             Intent(
                                 Intent.ACTION_VIEW,
-                                "https://github.com/MetrolistGroup/Metrolist".toUri(),
+                                defaultButton2Url.toUri(),
                             )
                         context.startActivity(intent)
                     },

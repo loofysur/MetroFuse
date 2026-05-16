@@ -10,6 +10,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.palette.graphics.Palette
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlin.math.abs
 
 /**
  * Player color extraction system for generating gradients from album artwork
@@ -69,6 +70,55 @@ object PlayerColorExtractor {
                 blue = (primaryColor.blue * 0.6f).coerceAtLeast(0f)
             ), // Middle: darker version of primary color
             Color.Black // End: black
+        )
+    }
+
+    suspend fun extractGalaxyColors(
+        palette: Palette,
+        fallbackColor: Int,
+    ): List<Color> = withContext(Dispatchers.Default) {
+        val dominantColor = palette.getDominantColor(fallbackColor)
+        val dominantHsv = FloatArray(3)
+        android.graphics.Color.colorToHSV(dominantColor, dominantHsv)
+
+        if (dominantHsv[2] < 0.14f && dominantHsv[1] < 0.35f) {
+            return@withContext listOf(
+                Color.Black,
+                Color(0xFF020202),
+                Color.Black,
+                Color.White,
+            )
+        }
+
+        val bestSwatch =
+            listOfNotNull(
+                palette.dominantSwatch,
+                palette.darkMutedSwatch,
+                palette.darkVibrantSwatch,
+                palette.mutedSwatch,
+                palette.vibrantSwatch,
+            ).maxByOrNull { swatch ->
+                val hsv = FloatArray(3)
+                android.graphics.Color.colorToHSV(swatch.rgb, hsv)
+                swatch.population * (0.45f + hsv[1]) * (1.15f - abs(hsv[2] - 0.38f)).coerceIn(0.25f, 1f)
+            }
+
+        val hsv = FloatArray(3)
+        android.graphics.Color.colorToHSV(bestSwatch?.rgb ?: dominantColor, hsv)
+        val saturation =
+            if (hsv[1] < 0.12f) {
+                hsv[1] * 0.35f
+            } else {
+                (hsv[1] * 1.12f).coerceIn(0.18f, 0.82f)
+            }
+        val anchorValue = hsv[2].coerceIn(0.12f, 0.52f)
+        val hue = hsv[0]
+
+        listOf(
+            hsvColor(hue, saturation * 0.70f, anchorValue * 0.16f),
+            hsvColor(hue, saturation * 0.88f, anchorValue * 0.34f),
+            hsvColor(hue, saturation, anchorValue * 0.72f),
+            hsvColor(hue, saturation * 0.42f, (anchorValue * 1.45f).coerceIn(0.45f, 0.78f)),
         )
     }
 
@@ -132,6 +182,21 @@ object PlayerColorExtractor {
         
         return populationWeight * vibrancyBonus * (saturation + brightness) / 2f
     }
+
+    private fun hsvColor(
+        hue: Float,
+        saturation: Float,
+        value: Float,
+    ): Color =
+        Color(
+            android.graphics.Color.HSVToColor(
+                floatArrayOf(
+                    hue,
+                    saturation.coerceIn(0f, 1f),
+                    value.coerceIn(0f, 1f),
+                ),
+            ),
+        )
 
     /**
      * Configuration constants for color extraction

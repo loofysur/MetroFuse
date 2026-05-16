@@ -41,6 +41,7 @@ object AppleMusicSongResolver {
         val title: String,
         val artists: List<String>,
         val album: String?,
+        val isrc: String?,
         val durationMs: Long?,
         val explicit: Boolean?,
         val storefront: String = DEFAULT_STOREFRONT,
@@ -58,11 +59,21 @@ object AppleMusicSongResolver {
         val expiresAtMs: Long,
     )
 
+    data class CandidateMetadata(
+        val adamId: String,
+        val title: String,
+        val artist: String,
+        val album: String?,
+        val isrc: String?,
+        val durationMs: Long?,
+    )
+
     private data class Candidate(
         val adamId: String,
         val title: String,
         val artist: String,
         val album: String?,
+        val isrc: String?,
         val durationMs: Long?,
         val explicit: Boolean?,
     )
@@ -74,7 +85,9 @@ object AppleMusicSongResolver {
             ?.takeIf { it.expiresAtMs > now + 30_000L }
             ?.let { return it }
 
-        val track = findBestTrack(query)
+        val track = query.mediaId.toAppleAdamIdOrNull()
+            ?.let { query.toDirectCandidate(it) }
+            ?: findBestTrack(query)
             ?: throw AppleMusicWrapperManagerProvider.WrapperManagerException(
                 "No Apple Music match found for ${query.title}"
             )
@@ -116,6 +129,24 @@ object AppleMusicSongResolver {
         ).also { resolvedCache[cacheKey] = it }
     }
 
+    fun searchCandidates(
+        query: Query,
+        limit: Int = 8,
+    ): List<CandidateMetadata> {
+        val results = linkedMapOf<String, CandidateMetadata>()
+        for (term in searchTerms(query)) {
+            fetchAppleCatalogCandidates(query, term).forEach { candidate ->
+                results.putIfAbsent(candidate.adamId, candidate.toCandidateMetadata())
+                if (results.size >= limit) return results.values.toList()
+            }
+            fetchItunesCandidates(query, term).forEach { candidate ->
+                results.putIfAbsent(candidate.adamId, candidate.toCandidateMetadata())
+                if (results.size >= limit) return results.values.toList()
+            }
+        }
+        return results.values.toList()
+    }
+
     fun invalidate(mediaId: String) {
         resolvedCache.keys
             .filter { it.startsWith("$mediaId::") }
@@ -123,8 +154,37 @@ object AppleMusicSongResolver {
     }
 
     private fun findBestTrack(query: Query): Candidate? {
+        findAppleCatalogTrackByIsrc(query)?.let { return it }
         findBestAppleCatalogTrack(query)?.let { return it }
         return findBestItunesTrack(query)
+    }
+
+    private fun findAppleCatalogTrackByIsrc(query: Query): Candidate? {
+        val isrc = query.isrc?.trim()?.uppercase(Locale.US)?.takeIf { it.isNotBlank() } ?: return null
+        val storefront = query.storefront.lowercase(Locale.US)
+        val url = "$AMP_BASE_URL/v1/catalog/$storefront/songs".toHttpUrl().newBuilder()
+            .addQueryParameter("filter[isrc]", isrc)
+            .build()
+        val request = Request.Builder()
+            .url(url)
+            .header("Authorization", "Bearer $APPLE_MUSIC_TOKEN")
+            .header("Origin", "https://music.apple.com")
+            .header("Referer", "https://music.apple.com/")
+            .header("User-Agent", "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 Chrome/147 Mobile Safari/537.36")
+            .build()
+        return runCatching {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use null
+                val body = response.body ?: return@use null
+                val data = JSONObject(body.string()).optJSONArray("data") ?: return@use null
+                (0 until data.length())
+                    .mapNotNull { index -> data.optJSONObject(index)?.toAppleCatalogCandidate() }
+                    .firstOrNull { candidate ->
+                        candidate.isrc?.equals(isrc, ignoreCase = true) == true &&
+                            score(candidate, query) > REJECT_SCORE
+                    }
+            }
+        }.getOrNull()
     }
 
     private fun findBestAppleCatalogTrack(query: Query): Candidate? {
@@ -245,6 +305,7 @@ object AppleMusicSongResolver {
             title = attributes.optString("name").takeIf { it.isNotBlank() } ?: return null,
             artist = attributes.optString("artistName"),
             album = attributes.optString("albumName").takeIf { it.isNotBlank() },
+            isrc = attributes.optString("isrc").takeIf { it.isNotBlank() },
             durationMs = attributes.optLong("durationInMillis").takeIf { it > 0L },
             explicit = when (attributes.optString("contentRating").lowercase(Locale.US)) {
                 "explicit" -> true
@@ -261,6 +322,7 @@ object AppleMusicSongResolver {
             title = optString("trackName").takeIf { it.isNotBlank() } ?: return null,
             artist = optString("artistName"),
             album = optString("collectionName").takeIf { it.isNotBlank() },
+            isrc = null,
             durationMs = optLong("trackTimeMillis").takeIf { it > 0L },
             explicit = when (optString("trackExplicitness").lowercase(Locale.US)) {
                 "explicit" -> true
@@ -281,6 +343,9 @@ object AppleMusicSongResolver {
         val wantedTitle = query.title.normalized()
         val candidateTitle = candidate.title.normalized()
         if (hasBlockedVariant(candidate, query)) return REJECT_SCORE
+        if (!query.isrc.isNullOrBlank() && candidate.isrc.equals(query.isrc, ignoreCase = true)) {
+            return 260
+        }
 
         var score = when {
             wantedTitle == candidateTitle -> 80
@@ -371,10 +436,48 @@ object AppleMusicSongResolver {
             title.normalized(),
             artists.joinToString("|") { it.normalized() },
             album?.normalized().orEmpty(),
+            isrc?.uppercase(Locale.US).orEmpty(),
             durationMs?.toString().orEmpty(),
             explicit?.toString().orEmpty(),
             storefront.uppercase(Locale.US),
         ).joinToString("::")
+    }
+
+    private fun Query.toDirectCandidate(adamId: String): Candidate =
+        Candidate(
+            adamId = adamId,
+            title = title,
+            artist = artists.joinToString(", "),
+            album = album,
+            isrc = isrc,
+            durationMs = durationMs,
+            explicit = explicit,
+        )
+
+    private fun Candidate.toCandidateMetadata(): CandidateMetadata =
+        CandidateMetadata(
+            adamId = adamId,
+            title = title,
+            artist = artist,
+            album = album,
+            isrc = isrc,
+            durationMs = durationMs,
+        )
+
+    private fun String.toAppleAdamIdOrNull(): String? {
+        val trimmed = trim()
+        if (trimmed.matches(Regex("\\d{4,}"))) return trimmed
+        Regex("""^apple(?::track)?:([0-9]{4,})$""", RegexOption.IGNORE_CASE)
+            .matchEntire(trimmed)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.let { return it }
+        Regex("""music\.apple\.com/(?:[a-z]{2}/)?(?:album/[^/]+/)?(?:[^?]+)?\?i=([0-9]{4,})""", RegexOption.IGNORE_CASE)
+            .find(trimmed)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.let { return it }
+        return null
     }
 
     private fun String.normalized(): String {

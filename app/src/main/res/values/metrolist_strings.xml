@@ -65,6 +65,8 @@
     <string name="show_artist_description">Show artist description</string>
     <string name="show_artist_subscriber_count">Show subscriber count</string>
     <string name="show_artist_monthly_listeners">Show monthly listeners</string>
+    <string name="apple_music_artist_motion_backgrounds">Apple Music artist motion backgrounds</string>
+    <string name="apple_music_artist_motion_backgrounds_desc">Use Apple Music animated hero videos on supported artist pages.</string>
 
     <!-- Menu descriptions -->
     <string name="download_playlist_desc">Download all songs for offline playback</string>
@@ -110,6 +112,7 @@
     <string name="new_player_design">New player design</string>
     <string name="new_mini_player_design">New mini-player design</string>
     <string name="player_background_blur">Blur</string>
+    <string name="player_background_galaxy_blur">Galaxy blur</string>
     <string name="player_buttons_style">Player button colors</string>
     <string name="default_style">Default</string>
     <string name="primary_color_style">Primary color</string>
@@ -214,6 +217,8 @@
     <string name="enable_authentication">Enable authentication</string>
     <string name="discord_use_details">Use details instead of state</string>
     <string name="discord_use_details_description">Show the song title prominently instead of the artist name</string>
+    <string name="discord_animated_covers">Animated Apple covers</string>
+    <string name="discord_animated_covers_description">Try Apple Music motion art in Discord Rich Presence and fall back to static covers when Discord cannot use it.</string>
 
     <string name="enable_similar_content">Enable similar content</string>
     <string name="similar_content_desc">Automatically adds more similar songs when the end of the queue is reached</string>
@@ -254,7 +259,7 @@
     <string name="release_notes">Release notes</string>
     <string name="changelog">Changelog</string>
     <string name="changelog_empty">No changelogs available</string>
-    <string name="github_releases_url">https://github.com/MetrolistGroup/Metrolist/releases</string>
+    <string name="github_releases_url">https://github.com/956tris/MetroFuse/releases</string>
     <string name="list_bullet">•</string>
     <string name="view_on_github">View on GitHub</string>
     <string name="current_version">Current version</string>
@@ -400,6 +405,54 @@
     <string name="metromix_preset_smooth_desc">Soft curve with minimal volume bumps</string>
     <string name="metromix_preset_long_blend">Long blend</string>
     <string name="metromix_preset_long_blend_desc">Twelve-second overlap for dance or continuous mixes</string>
+    <string name="metromix_preset_custom">Custom</string>
+    <string name="metromix_preset_slam">Slam</string>
+    <string name="metromix_studio">MetroMix studio</string>
+    <string name="metromix_studio_desc">Edit transitions with waveform, bars, BPM, key, volume, EQ, and effects</string>
+    <string name="metromix_edit_transition">Edit transition</string>
+    <string name="metromix_beta">Beta</string>
+    <string name="metromix_mix_button">Mix</string>
+    <string name="metromix_auto_mode">Auto mode</string>
+    <string name="metromix_transition_bars">Transition bars</string>
+    <string name="metromix_volume_curve">Volume</string>
+    <string name="metromix_eq_curve">EQ</string>
+    <string name="metromix_effect_curve">Effects</string>
+    <string name="metromix_waveform">Waveform</string>
+    <string name="metromix_track_out">Outgoing</string>
+    <string name="metromix_track_in">Incoming</string>
+    <string name="metromix_bpm_unknown">BPM unknown</string>
+    <string name="metromix_key_unknown">Key unknown</string>
+    <string name="metromix_bars_unavailable">Short</string>
+    <string name="metromix_metadata_tagged">metadata</string>
+    <string name="metromix_metadata_estimated">estimated</string>
+    <string name="metromix_metadata_missing">missing</string>
+    <string name="metromix_curve_auto">Auto</string>
+    <string name="metromix_curve_balanced">Balanced</string>
+    <string name="metromix_curve_punchy">Punchy</string>
+    <string name="metromix_curve_melt">Melt</string>
+    <string name="metromix_curve_wave">Wave</string>
+    <string name="metromix_volume_overlap">Overlap</string>
+    <string name="metromix_volume_fade_in_out">Fade in fade out</string>
+    <string name="metromix_volume_smooth_crossfade">Smooth crossfade</string>
+    <string name="metromix_volume_cut_in_fade_out">Cut in fade out</string>
+    <string name="metromix_eq_auto">Auto</string>
+    <string name="metromix_eq_clean">Clean</string>
+    <string name="metromix_eq_bass_swap">Bass swap</string>
+    <string name="metromix_eq_flat">Flat</string>
+    <string name="metromix_eq_center_bass_swap">Center bass swap</string>
+    <string name="metromix_eq_three_band_fade">3-band fade</string>
+    <string name="metromix_eq_vocal_space">Vocal space</string>
+    <string name="metromix_eq_full">Full</string>
+    <string name="metromix_effect_auto">Auto</string>
+    <string name="metromix_effect_none">None</string>
+    <string name="metromix_effect_filter">Filter</string>
+    <string name="metromix_effect_echo">Echo</string>
+    <string name="metromix_effect_wave">Wave</string>
+    <string name="metromix_effect_low_pass">Low pass</string>
+    <string name="metromix_effect_echo_out">Echo out</string>
+    <string name="metromix_effect_sweep">Sweep</string>
+    <string name="metromix_metadata_note">BPM and key use embedded tags first, then ISRC or recording metadata through MusicBrainz and ReccoBeats. Tracks without reliable metadata show unknown instead of guessed values.</string>
+    <string name="done">Done</string>
 
     <!-- Romanization Settings -->
     <string name="lyrics_romanization_cyrillic">Cyrillic</string>
@@ -459,6 +512,29 @@
     <string name="lyrics_romanize_as_main">Show romanized lyrics as main</string>
 
     <string name="integrations">Integrations</string>
+    <string name="provider_health">Provider health</string>
+    <string name="provider_health_settings_desc">Check Deezer, TIDAL, Qobuz, SoundCloud, and YouTube Music availability</string>
+    <string name="provider_health_summary">Lightweight checks for provider APIs and resolver instances. These probes do not download songs.</string>
+    <string name="provider_health_refresh">Refresh</string>
+    <string name="provider_health_last_checked">Last checked %1$s</string>
+    <string name="provider_health_online">Online</string>
+    <string name="provider_health_reachable">Reachable</string>
+    <string name="provider_health_offline">Offline</string>
+    <string name="provider_health_checking">Checking...</string>
+    <string name="provider_health_not_checked">Not checked</string>
+    <string name="provider_health_latency">%1$d ms</string>
+    <string name="provider_health_selected">Selected</string>
+    <string name="provider_order">Provider order</string>
+    <string name="provider_order_settings_desc">Drag audio providers into the order MetroFuse should try them</string>
+    <string name="provider_order_summary">Drag providers higher to try them earlier. Providers that need their own integration toggle still only run when enabled.</string>
+    <string name="provider_order_reset">Reset provider order</string>
+    <string name="audio_provider_soundcloud">SoundCloud</string>
+    <string name="audio_provider_tidal">TIDAL</string>
+    <string name="audio_provider_deezer">Deezer</string>
+    <string name="audio_provider_instagram">Instagram</string>
+    <string name="audio_provider_youtube_music">YouTube Music</string>
+    <string name="audio_provider_qobuz">Qobuz</string>
+    <string name="audio_provider_apple_music">Apple Music</string>
     <string name="username">Username</string>
     <string name="password">Password</string>
     <string name="prefer_soundcloud_audio">Prefer SoundCloud audio</string>
@@ -533,6 +609,11 @@
     <string name="spotify_canvas">Spotify Canvas</string>
     <string name="enable_spotify_canvas">Enable Spotify Canvas</string>
     <string name="enable_spotify_canvas_desc">Shows Spotify looping Canvas video when one is available for the current song</string>
+    <string name="canvas_artwork_priority">Canvas priority</string>
+    <string name="canvas_artwork_priority_apple">Prefer Apple Music</string>
+    <string name="canvas_artwork_priority_apple_desc">Use tall Apple Music motion art in the player first, then Spotify Canvas if Apple has no match.</string>
+    <string name="canvas_artwork_priority_spotify">Prefer Spotify</string>
+    <string name="canvas_artwork_priority_spotify_desc">Use Spotify Canvas in the player first, then Apple Music motion art if Spotify has no match.</string>
     <string name="embed_animated_canvas">Embed Canvas in downloads</string>
     <string name="embed_animated_canvas_desc">Embeds available Spotify or Apple Music Canvas video into downloaded tracks. Warning: most offline players cannot read it; MetroFuse can.</string>
     <string name="spotify_canvas_requires_cookie">Log in with Spotify before enabling Canvas videos</string>
@@ -955,6 +1036,9 @@
     <string name="discord_buttons">Buttons</string>
     <string name="discord_button_1">Button 1</string>
     <string name="discord_button_2">Button 2</string>
+    <string name="discord_default_button_1">Listen on YouTube Music</string>
+    <string name="discord_default_button_2">Visit MetroFuse</string>
+    <string name="discord_default_button_2_url">https://github.com/956tris/MetroFuse</string>
     <string name="login_successful">Login successful!</string>
     <string name="discord_information_warning">This feature uses the KizzyRPC library to connect to Discord\'s Gateway and update your Rich Presence status. While no account suspensions from similar usage have been reported, this method is not officially supported by Discord and may be considered a Terms of Service violation. Your token is handled locally and never sent to third-party servers. Proceed at your own discretion!</string>
     <string name="discord_activity_type">Activity type</string>
@@ -997,8 +1081,10 @@
 
     <!-- Credits / About Screen -->
     <string name="credits_lead_developer">Lead developer</string>
+    <string name="credits_main_developer">Main developer</string>
     <string name="credits_collaborator">Collaborator</string>
     <string name="credits_collaborators_section">Collaborators</string>
+    <string name="credits_metrolist_developers_section">Metrolist developers</string>
     <string name="credits_license_name">GNU General Public License v3.0</string>
     <string name="credits_license_desc">Free, open-source software. You may use, study, share, and improve it</string>
     <string name="credits_discord">Discord server</string>
@@ -1122,6 +1208,12 @@
     <string name="switch_to_list_view">Switch to list view</string>
     <string name="switch_to_grid_view">Switch to grid view</string>
     <string name="more_options">More options</string>
+    <string name="choose_audio_source">Choose audio source</string>
+    <string name="automatic_audio_source">Automatic</string>
+    <string name="automatic_audio_source_description">Use the provider order and matching logic.</string>
+    <string name="audio_source_matches_empty">No alternate matches found.</string>
+    <string name="audio_source_matches_failed">Could not load source matches.</string>
+    <string name="audio_source_match_updated">Audio source updated</string>
 
     <!-- Loudness Level -->
     <string name="loudness_level">Loudness level</string>

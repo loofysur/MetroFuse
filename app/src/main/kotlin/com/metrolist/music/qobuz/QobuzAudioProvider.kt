@@ -66,6 +66,15 @@ object QobuzAudioProvider {
         val expiresAtMs: Long,
     )
 
+    data class CandidateMetadata(
+        val trackId: String,
+        val title: String,
+        val artist: String,
+        val album: String?,
+        val isrc: String?,
+        val durationMs: Long?,
+    )
+
     class QobuzResolutionException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
     private data class MatchedTrack(
@@ -110,11 +119,16 @@ object QobuzAudioProvider {
             ?.takeIf { it.expiresAtMs > now + 20_000L }
             ?.let { return it }
 
+        val directTrackId = query.mediaId.toQobuzTrackIdOrNull()
         val trackCacheKey = query.trackCacheKey()
-        val track = trackCache[trackCacheKey]
-            ?: findBestTrack(query)
-                ?.also { trackCache[trackCacheKey] = it }
-            ?: throw QobuzResolutionException("Qobuz match not found for ${query.title}")
+        val track = if (directTrackId != null) {
+            query.toDirectMatchedTrack(directTrackId)
+        } else {
+            trackCache[trackCacheKey]
+                ?: findBestTrack(query)
+                    ?.also { trackCache[trackCacheKey] = it }
+                ?: throw QobuzResolutionException("Qobuz match not found for ${query.title}")
+        }
 
         var lastError: String? = null
         for (quality in buildQualityFallbackOrder(query.qualityCode)) {
@@ -152,6 +166,24 @@ object QobuzAudioProvider {
         streamCache.keys
             .filter { it.startsWith("$mediaId::") }
             .forEach { streamCache.remove(it) }
+    }
+
+    fun searchCandidates(
+        query: Query,
+        limit: Int = 8,
+    ): List<CandidateMetadata> {
+        val results = linkedMapOf<String, CandidateMetadata>()
+        for (term in searchTerms(query)) {
+            for (backend in searchBackendOrder(query.backend)) {
+                val array = searchTracks(term, query.countryCode, backend) ?: continue
+                for (index in 0 until array.length()) {
+                    val candidate = array.optJSONObject(index)?.toCandidateMetadata() ?: continue
+                    results.putIfAbsent(candidate.trackId, candidate)
+                    if (results.size >= limit) return results.values.toList()
+                }
+            }
+        }
+        return results.values.toList()
     }
 
     private fun streamBackendOrder(preferred: ResolverBackend): List<ResolverBackend> {
@@ -868,6 +900,50 @@ object QobuzAudioProvider {
             isrc?.trim()?.uppercase(Locale.US).orEmpty(),
             countryCode.uppercase(Locale.US),
         ).joinToString("|")
+    }
+
+    private fun Query.toDirectMatchedTrack(trackId: String): MatchedTrack =
+        MatchedTrack(
+            trackId = trackId,
+            hires = false,
+            bitDepth = null,
+            samplingRateKhz = null,
+            durationMs = durationMs,
+        )
+
+    private fun String.toQobuzTrackIdOrNull(): String? {
+        val trimmed = trim()
+        if (trimmed.matches(Regex("\\d+"))) return trimmed
+        Regex("""^qobuz:track:(\d+)$""", RegexOption.IGNORE_CASE)
+            .matchEntire(trimmed)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.let { return it }
+        Regex("""qobuz\.com/(?:[a-z]{2}-[a-z]{2}/)?(?:album/[^/]+/)?(\d+)""", RegexOption.IGNORE_CASE)
+            .find(trimmed)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.let { return it }
+        return null
+    }
+
+    private fun JSONObject.toCandidateMetadata(): CandidateMetadata? {
+        if (!optBoolean("downloadable", false) && !optBoolean("streamable", false)) return null
+        val trackId = stringOrNull("id") ?: return null
+        val title = stringOrNull("title") ?: return null
+        val version = stringOrNull("version")
+        val displayTitle = listOf(title, version)
+            .filter { !it.isNullOrBlank() }
+            .joinToString(" ")
+        val album = optJSONObject("album")?.stringOrNull("title")
+        return CandidateMetadata(
+            trackId = trackId,
+            title = displayTitle,
+            artist = collectArtistNames(this).joinToString(", "),
+            album = album,
+            isrc = stringOrNull("isrc"),
+            durationMs = intOrNull("duration")?.toLong()?.times(1000L),
+        )
     }
 
     private fun extractExpiryMs(url: String): Long {

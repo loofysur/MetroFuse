@@ -19,6 +19,9 @@ import com.metrolist.music.apple.AppleMusicAwareDataSourceFactory
 import com.metrolist.music.apple.AppleMusicSongResolver
 import com.metrolist.music.apple.AppleMusicWrapperDataSource
 import com.metrolist.music.constants.AppleMusicFallbackEnabledKey
+import com.metrolist.music.constants.AudioProviderOrder
+import com.metrolist.music.constants.AudioProviderOrderItem
+import com.metrolist.music.constants.AudioProviderOrderKey
 import com.metrolist.music.constants.DeezerAudioQuality
 import com.metrolist.music.constants.DeezerAudioQualityKey
 import com.metrolist.music.constants.DeezerResolverUrlKey
@@ -45,6 +48,7 @@ import com.metrolist.music.di.DownloadCache
 import com.metrolist.music.di.PlayerCache
 import com.metrolist.music.extensions.toEnum
 import com.metrolist.music.lyrics.LyricsHelper
+import com.metrolist.music.providers.ProviderIsrc
 import com.metrolist.music.qobuz.QobuzAudioProvider
 import com.metrolist.music.soundcloud.SoundCloudAudioProvider
 import com.metrolist.music.instagram.InstagramAudioProvider
@@ -274,6 +278,7 @@ constructor(
         val preferSoundCloudAudio = context.dataStore.get(PreferSoundCloudAudioKey, false)
         val preferInstagramAudio = context.dataStore.get(PreferInstagramAudioKey, false)
         val preferYouTubeMusicAudio = context.dataStore.get(PreferYouTubeMusicAudioKey, false)
+        val audioProviderOrder = AudioProviderOrder.deserialize(context.dataStore.get(AudioProviderOrderKey, ""))
         val instagramCookie = context.dataStore.get(InstagramCookieKey, "")
         val instagramUserAgent = context.dataStore.get(InstagramUserAgentKey, InstagramAudioProvider.DEFAULT_USER_AGENT)
             .takeIf { it.isNotBlank() }
@@ -299,6 +304,7 @@ constructor(
             "preferSoundCloud=$preferSoundCloudAudio",
             "preferInstagram=$preferInstagramAudio",
             "preferYouTube=$preferYouTubeMusicAudio",
+            "providerOrder=${audioProviderOrder.joinToString(",") { it.name }}",
             "instagramAuth=$instagramCookieConfigured",
             "instagramCookie=${instagramCookie.hashCode()}",
             "instagramUserAgent=${instagramUserAgent.hashCode()}",
@@ -323,6 +329,7 @@ constructor(
         val preferSoundCloudAudio = context.dataStore.get(PreferSoundCloudAudioKey, false)
         val preferInstagramAudio = context.dataStore.get(PreferInstagramAudioKey, false)
         val preferYouTubeMusicAudio = context.dataStore.get(PreferYouTubeMusicAudioKey, false)
+        val audioProviderOrder = AudioProviderOrder.deserialize(context.dataStore.get(AudioProviderOrderKey, ""))
         val instagramCookie = context.dataStore.get(InstagramCookieKey, "")
         val instagramUserAgent = context.dataStore.get(InstagramUserAgentKey, InstagramAudioProvider.DEFAULT_USER_AGENT)
             .takeIf { it.isNotBlank() }
@@ -389,86 +396,104 @@ constructor(
             Result.failure(IllegalStateException("Instagram audio not enabled"))
         var youtubeAttempt: Result<DownloadStreamResolution> =
             Result.failure(IllegalStateException("YouTube Music not attempted yet"))
+        var qobuzAttempt: Result<QobuzAudioProvider.Resolved> =
+            Result.failure(IllegalStateException("Qobuz not attempted yet"))
+        val attemptedProviders = mutableSetOf<AudioProviderOrderItem>()
+        val orderedProviders = buildList {
+            if (directSoundCloudMediaId) add(AudioProviderOrderItem.SOUNDCLOUD)
+            if (directDeezerMediaId) add(AudioProviderOrderItem.DEEZER)
+            addAll(audioProviderOrder)
+        }.distinct()
 
-        if (preferSoundCloudAudio || directSoundCloudMediaId) {
-            soundCloudAttempt = runCatching {
-                SoundCloudAudioProvider.resolve(buildSoundCloudQuery(mediaId, song), soundCloudAuthToken)
+        suspend fun attemptProvider(provider: AudioProviderOrderItem): DownloadStreamResolution? {
+            if (provider in attemptedProviders) return null
+            when (provider) {
+                AudioProviderOrderItem.SOUNDCLOUD -> {
+                    if (!preferSoundCloudAudio && !directSoundCloudMediaId) return null
+                    attemptedProviders += provider
+                    soundCloudAttempt = runCatching {
+                        SoundCloudAudioProvider.resolve(buildSoundCloudQuery(mediaId, song), soundCloudAuthToken)
+                    }
+                    soundCloudAttempt.getOrNull()?.let { resolved ->
+                        Timber.tag(TAG).i("Using SoundCloud stream for download $mediaId: ${resolved.title}")
+                        return resolved.toDownloadResolution()
+                    }
+                }
+                AudioProviderOrderItem.TIDAL -> return null
+                AudioProviderOrderItem.DEEZER -> {
+                    if (!preferDeezerAudio && !directDeezerMediaId) return null
+                    attemptedProviders += provider
+                    deezerAttempt = runCatching {
+                        DeezerAudioProvider.resolve(
+                            buildDeezerQuery(
+                                mediaId = mediaId,
+                                song = song,
+                                resolverUrl = deezerResolverUrl,
+                                quality = deezerQuality,
+                            ),
+                        )
+                    }
+                    deezerAttempt.getOrNull()?.let { resolved ->
+                        Timber.tag(TAG).i("Using Deezer stream for download $mediaId: ${resolved.label}")
+                        return resolved.toDownloadResolution()
+                    }
+                }
+                AudioProviderOrderItem.INSTAGRAM -> {
+                    if (!preferInstagramAudio) return null
+                    attemptedProviders += provider
+                    instagramAttempt = runCatching {
+                        InstagramAudioProvider.resolve(
+                            buildInstagramQuery(mediaId, song),
+                            instagramCookie,
+                            instagramUuid,
+                            instagramUserAgent,
+                            instagramAppId,
+                        )
+                    }
+                    instagramAttempt.getOrNull()?.let { resolved ->
+                        Timber.tag(TAG).i("Using Instagram audio stream for download $mediaId: ${resolved.title}")
+                        return resolved.toDownloadResolution()
+                    }
+                }
+                AudioProviderOrderItem.YOUTUBE_MUSIC -> {
+                    if (!preferYouTubeMusicAudio) return null
+                    attemptedProviders += provider
+                    youtubeAttempt = runCatching {
+                        resolveYouTubeFallback(mediaId)
+                    }
+                    youtubeAttempt.getOrNull()?.let { resolved ->
+                        Timber.tag(TAG).i("Using YouTube Music stream for download $mediaId")
+                        return resolved
+                    }
+                }
+                AudioProviderOrderItem.QOBUZ -> {
+                    attemptedProviders += provider
+                    qobuzAttempt = runCatching {
+                        QobuzAudioProvider.resolve(buildQobuzQuery(context, mediaId, song))
+                    }
+                    qobuzAttempt.getOrNull()?.let { resolved ->
+                        return resolved.toDownloadResolution()
+                    }
+                }
+                AudioProviderOrderItem.APPLE_MUSIC -> {
+                    if (!appleMusicFallbackEnabled) return null
+                    attemptedProviders += provider
+                    appleAttempt = runCatching {
+                        AppleMusicSongResolver.resolve(buildAppleMusicQuery(mediaId, song))
+                    }
+                    appleAttempt.getOrNull()?.let { resolved ->
+                        return resolved.toDownloadResolution()
+                    }
+                }
             }
-            soundCloudAttempt.getOrNull()?.let { resolved ->
-                Timber.tag(TAG).i("Using preferred SoundCloud stream for download $mediaId: ${resolved.title}")
-                return resolved.toDownloadResolution()
-            }
+            return null
         }
 
-        if (preferDeezerAudio || directDeezerMediaId) {
-            deezerAttempt = runCatching {
-                DeezerAudioProvider.resolve(
-                    buildDeezerQuery(
-                        mediaId = mediaId,
-                        song = song,
-                        resolverUrl = deezerResolverUrl,
-                        quality = deezerQuality,
-                    ),
-                )
-            }
-            deezerAttempt.getOrNull()?.let { resolved ->
-                Timber.tag(TAG).i("Using preferred Deezer stream for download $mediaId: ${resolved.label}")
-                return resolved.toDownloadResolution()
-            }
+        for (provider in orderedProviders) {
+            attemptProvider(provider)?.let { return it }
         }
 
-        if (preferInstagramAudio) {
-            instagramAttempt = runCatching {
-                InstagramAudioProvider.resolve(
-                    buildInstagramQuery(mediaId, song),
-                    instagramCookie,
-                    instagramUuid,
-                    instagramUserAgent,
-                    instagramAppId,
-                )
-            }
-            instagramAttempt.getOrNull()?.let { resolved ->
-                Timber.tag(TAG).i("Using preferred Instagram audio stream for download $mediaId: ${resolved.title}")
-                return resolved.toDownloadResolution()
-            }
-        }
-
-        if (preferYouTubeMusicAudio) {
-            youtubeAttempt = runCatching {
-                resolveYouTubeFallback(mediaId)
-            }
-            youtubeAttempt.getOrNull()?.let { resolved ->
-                Timber.tag(TAG).i("Using preferred YouTube Music stream for download $mediaId")
-                return resolved
-            }
-        }
-
-        if (preferAppleMusic) {
-            appleAttempt = runCatching {
-                AppleMusicSongResolver.resolve(buildAppleMusicQuery(mediaId, song))
-            }
-            appleAttempt.getOrNull()?.let { resolved ->
-                return resolved.toDownloadResolution()
-            }
-        }
-
-        val qobuzAttempt = runCatching {
-            QobuzAudioProvider.resolve(buildQobuzQuery(context, mediaId, song))
-        }
-        qobuzAttempt.getOrNull()?.let { resolved ->
-            return resolved.toDownloadResolution()
-        }
-
-        if (appleMusicFallbackEnabled && !preferAppleMusic) {
-            appleAttempt = runCatching {
-                AppleMusicSongResolver.resolve(buildAppleMusicQuery(mediaId, song))
-            }
-            appleAttempt.getOrNull()?.let { resolved ->
-                return resolved.toDownloadResolution()
-            }
-        }
-
-        if (!preferSoundCloudAudio && !directSoundCloudMediaId) {
+        if (!attemptedProviders.contains(AudioProviderOrderItem.SOUNDCLOUD) && !directSoundCloudMediaId) {
             soundCloudAttempt = runCatching {
                 SoundCloudAudioProvider.resolve(buildSoundCloudQuery(mediaId, song), soundCloudAuthToken)
             }
@@ -478,7 +503,7 @@ constructor(
             }
         }
 
-        if (!preferYouTubeMusicAudio) {
+        if (!attemptedProviders.contains(AudioProviderOrderItem.YOUTUBE_MUSIC)) {
             youtubeAttempt = runCatching {
                 resolveYouTubeFallback(mediaId)
             }
@@ -531,6 +556,7 @@ constructor(
             title = song?.song?.title ?: mediaId,
             artists = song?.orderedArtists?.map { it.name }.orEmpty(),
             album = song?.song?.albumName ?: song?.album?.title,
+            isrc = ProviderIsrc.firstOf(mediaId, song?.song?.id),
             durationMs = song?.song?.duration
                 ?.takeIf { it > 0 }
                 ?.toLong()
@@ -555,7 +581,7 @@ constructor(
             title = song?.song?.title ?: mediaId,
             artists = song?.orderedArtists?.map { it.name }.orEmpty(),
             album = song?.song?.albumName ?: song?.album?.title,
-            isrc = null,
+            isrc = ProviderIsrc.firstOf(mediaId, song?.song?.id),
             durationMs = song?.song?.duration
                 ?.takeIf { it > 0 }
                 ?.toLong()
@@ -597,7 +623,7 @@ constructor(
             title = song?.song?.title ?: mediaId,
             artists = song?.orderedArtists?.map { it.name }.orEmpty(),
             album = song?.song?.albumName ?: song?.album?.title,
-            isrc = null,
+            isrc = ProviderIsrc.firstOf(mediaId, song?.song?.id),
             durationMs = song?.song?.duration
                 ?.takeIf { it > 0 }
                 ?.toLong()
@@ -620,8 +646,7 @@ constructor(
                 ?.takeIf { it > 0 }
                 ?.toLong()
                 ?.times(1000L),
-            isrc = InstagramAudioProvider.normalizeIsrc(mediaId)
-                ?: InstagramAudioProvider.normalizeIsrc(song?.song?.id),
+            isrc = ProviderIsrc.firstOf(mediaId, song?.song?.id),
         )
     }
 

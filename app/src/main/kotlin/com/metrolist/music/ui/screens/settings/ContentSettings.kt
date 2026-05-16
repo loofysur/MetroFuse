@@ -55,6 +55,7 @@ import androidx.navigation.NavController
 import com.metrolist.music.LocalDatabase
 import com.metrolist.music.LocalPlayerAwareWindowInsets
 import com.metrolist.music.R
+import com.metrolist.music.constants.AppleMusicArtistMotionBackgroundKey
 import com.metrolist.music.constants.AppLanguageKey
 import com.metrolist.music.constants.ContentCountryKey
 import com.metrolist.music.constants.ContentLanguageKey
@@ -113,6 +114,8 @@ fun ContentSettings(
     val (showArtistDescription, onShowArtistDescriptionChange) = rememberPreference(key = ShowArtistDescriptionKey, defaultValue = true)
     val (showArtistSubscriberCount, onShowArtistSubscriberCountChange) = rememberPreference(key = ShowArtistSubscriberCountKey, defaultValue = true)
     val (showMonthlyListeners, onShowMonthlyListenersChange) = rememberPreference(key = ShowMonthlyListenersKey, defaultValue = true)
+    val (appleMusicArtistMotionBackground, onAppleMusicArtistMotionBackgroundChange) =
+        rememberPreference(key = AppleMusicArtistMotionBackgroundKey, defaultValue = false)
     val (proxyEnabled, onProxyEnabledChange) = rememberPreference(key = ProxyEnabledKey, defaultValue = false)
     val (proxyType, onProxyTypeChange) = rememberEnumPreference(key = ProxyTypeKey, defaultValue = Proxy.Type.HTTP)
     val (proxyUrl, onProxyUrlChange) = rememberPreference(key = ProxyUrlKey, defaultValue = "host:port")
@@ -818,6 +821,27 @@ fun ContentSettings(
                         )
                     },
                     onClick = { onShowMonthlyListenersChange(!showMonthlyListeners) }
+                ),
+                Material3SettingsItem(
+                    icon = painterResource(R.drawable.slow_motion_video),
+                    title = { Text(stringResource(R.string.apple_music_artist_motion_backgrounds)) },
+                    description = { Text(stringResource(R.string.apple_music_artist_motion_backgrounds_desc)) },
+                    trailingContent = {
+                        Switch(
+                            checked = appleMusicArtistMotionBackground,
+                            onCheckedChange = onAppleMusicArtistMotionBackgroundChange,
+                            thumbContent = {
+                                Icon(
+                                    painter = painterResource(
+                                        id = if (appleMusicArtistMotionBackground) R.drawable.check else R.drawable.close
+                                    ),
+                                    contentDescription = null,
+                                    modifier = Modifier.size(SwitchDefaults.IconSize)
+                                )
+                            }
+                        )
+                    },
+                    onClick = { onAppleMusicArtistMotionBackgroundChange(!appleMusicArtistMotionBackground) }
                 )
             )
         )

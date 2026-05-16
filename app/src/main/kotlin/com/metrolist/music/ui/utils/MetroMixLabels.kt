@@ -8,7 +8,10 @@ package com.metrolist.music.ui.utils
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.res.stringResource
 import com.metrolist.music.R
+import com.metrolist.music.constants.MetroMixEffectCurve
+import com.metrolist.music.constants.MetroMixEqCurve
 import com.metrolist.music.constants.MetroMixPreset
+import com.metrolist.music.constants.MetroMixVolumeCurve
 
 @Composable
 fun metroMixPresetLabel(preset: MetroMixPreset): String =
@@ -52,4 +55,34 @@ fun metroMixPresetDescription(preset: MetroMixPreset): String =
         MetroMixPreset.ECHO_OUT -> stringResource(R.string.metromix_preset_echo_out_desc)
         MetroMixPreset.SMOOTH -> stringResource(R.string.metromix_preset_smooth_desc)
         MetroMixPreset.LONG_BLEND -> stringResource(R.string.metromix_preset_long_blend_desc)
+    }
+
+@Composable
+fun metroMixVolumeCurveLabel(curve: MetroMixVolumeCurve): String =
+    when (curve) {
+        MetroMixVolumeCurve.AUTO -> stringResource(R.string.metromix_curve_auto)
+        MetroMixVolumeCurve.BALANCED -> stringResource(R.string.metromix_volume_overlap)
+        MetroMixVolumeCurve.PUNCHY -> stringResource(R.string.metromix_volume_fade_in_out)
+        MetroMixVolumeCurve.MELT -> stringResource(R.string.metromix_volume_smooth_crossfade)
+        MetroMixVolumeCurve.WAVE -> stringResource(R.string.metromix_volume_cut_in_fade_out)
+    }
+
+@Composable
+fun metroMixEqCurveLabel(curve: MetroMixEqCurve): String =
+    when (curve) {
+        MetroMixEqCurve.AUTO -> stringResource(R.string.metromix_eq_auto)
+        MetroMixEqCurve.CLEAN -> stringResource(R.string.metromix_eq_flat)
+        MetroMixEqCurve.BASS_SWAP -> stringResource(R.string.metromix_eq_center_bass_swap)
+        MetroMixEqCurve.VOCAL_SPACE -> stringResource(R.string.metromix_eq_vocal_space)
+        MetroMixEqCurve.FULL -> stringResource(R.string.metromix_eq_three_band_fade)
+    }
+
+@Composable
+fun metroMixEffectCurveLabel(curve: MetroMixEffectCurve): String =
+    when (curve) {
+        MetroMixEffectCurve.AUTO -> stringResource(R.string.metromix_effect_auto)
+        MetroMixEffectCurve.NONE -> stringResource(R.string.metromix_effect_none)
+        MetroMixEffectCurve.FILTER -> stringResource(R.string.metromix_effect_low_pass)
+        MetroMixEffectCurve.ECHO -> stringResource(R.string.metromix_effect_echo_out)
+        MetroMixEffectCurve.WAVE -> stringResource(R.string.metromix_effect_sweep)
     }

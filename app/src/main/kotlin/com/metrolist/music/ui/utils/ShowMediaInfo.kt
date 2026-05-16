@@ -140,6 +140,8 @@ fun ShowMediaInfo(videoId: String) {
     val playerConnection = LocalPlayerConnection.current
     val playbackMetadataState = playerConnection?.mediaMetadata?.collectAsStateWithLifecycle(initialValue = null)
     val playbackMetadata = playbackMetadataState?.value?.takeIf { it.id == videoId }
+    val liveFormatState = playerConnection?.currentFormat?.collectAsStateWithLifecycle(initialValue = null)
+    val liveFormat = liveFormatState?.value?.takeIf { playbackMetadata?.id == videoId }
     val context = LocalContext.current
 
     val loudnessLevel by rememberEnumPreference(
@@ -187,15 +189,10 @@ fun ShowMediaInfo(videoId: String) {
             song?.orderedArtists?.joinToString { it.name }
                 ?: playbackMetadata?.artists?.joinToString { it.name }
         val displayMediaId = song?.id ?: playbackMetadata?.id ?: videoId
-        val hasDisplayInfo =
-            title != null ||
-                artists != null ||
-                currentFormat != null ||
-                info != null
+        val displayFormatEntity = currentFormat ?: liveFormat
 
-        if (hasDisplayInfo) {
-            item(contentType = "MediaDetails") {
-                Column {
+        item(contentType = "MediaDetails") {
+            Column {
                     val baseList = listOf(
                         stringResource(R.string.song_title) to title,
                         stringResource(R.string.song_artists) to artists,
@@ -224,18 +221,20 @@ fun ShowMediaInfo(videoId: String) {
                         R.drawable.content_copy
                     )
 
-                    val measuredLufs: Double? = currentFormat?.perceptualLoudnessDb ?: currentFormat?.loudnessDb?.let { it + LoudnessLevel.AGGRESSIVE.targetLufs }
-                    val displayFormat = currentFormat?.takeIf { it.hasUsefulPlaybackDetails() }
+                    val measuredLufs: Double? =
+                        displayFormatEntity?.perceptualLoudnessDb
+                            ?: displayFormatEntity?.loudnessDb?.let { it + LoudnessLevel.AGGRESSIVE.targetLufs }
+                    val displayFormat = displayFormatEntity?.takeIf { it.hasUsefulPlaybackDetails() }
 
-                    val extendedList = if (currentFormat != null) {
+                    val extendedList = if (displayFormatEntity != null || info != null || playerConnection != null) {
                         listOf(
                             stringResource(R.string.ai_provider) to displayFormat?.audioSourceLabel(),
                             stringResource(R.string.views) to info?.viewCount?.let(::numberFormatter).orEmpty(),
                             stringResource(R.string.likes) to info?.like?.let(::numberFormatter).orEmpty(),
                             stringResource(R.string.dislikes) to info?.dislike?.let(::numberFormatter).orEmpty(),
-                            "Itag" to currentFormat?.itag?.toString(),
-                            stringResource(R.string.mime_type) to currentFormat?.mimeType,
-                            stringResource(R.string.codecs) to currentFormat?.codecs,
+                            "Itag" to displayFormatEntity?.itag?.toString(),
+                            stringResource(R.string.mime_type) to displayFormatEntity?.mimeType,
+                            stringResource(R.string.codecs) to displayFormatEntity?.codecs,
                             stringResource(R.string.bitrate) to displayFormat?.bitrate?.takeIf { it > 0 }?.let { "${it / 1000} Kbps" },
                             stringResource(R.string.sample_rate) to displayFormat?.sampleRate?.takeIf { it > 0 }?.let { "$it Hz" },
                             stringResource(R.string.loudness) to measuredLufs?.let {
@@ -244,12 +243,12 @@ fun ShowMediaInfo(videoId: String) {
                             stringResource(R.string.loudness_level) to getLoudnessLevelLabel(loudnessLevel),
                             stringResource(R.string.volume) to if (playerConnection != null) "${(playerConnection.player.volume * 100).toInt()}%" else null,
                             stringResource(R.string.file_size) to
-                                    currentFormat?.contentLength?.let {
-                                        Formatter.formatShortFileSize(
-                                            context,
-                                            it
-                                        )
-                                    },
+                                displayFormatEntity?.contentLength?.let {
+                                    Formatter.formatShortFileSize(
+                                        context,
+                                        it,
+                                    )
+                                },
                         )
                     } else {
                         emptyList()
@@ -314,21 +313,6 @@ fun ShowMediaInfo(videoId: String) {
                             )
                         )
                     )
-                }
-            }
-        } else {
-            item(contentType = "MediaInfoLoader") {
-                ShimmerHost {
-                    Row(
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(all = 16.dp)
-                    ) {
-                        TextPlaceholder()
-                    }
-                }
             }
         }
     }

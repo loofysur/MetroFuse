@@ -83,6 +83,80 @@ object DeezerHomeFeedProvider {
             }
         }
 
+    suspend fun resolveAlbumArtwork(
+        title: String,
+        artist: String?,
+        album: String?,
+        cookie: String = "",
+    ): String? =
+        runCatching {
+            withContext(Dispatchers.IO) {
+                val normalizedTitle = title.normalizedArtworkMatch()
+                if (normalizedTitle.isBlank()) return@withContext null
+
+                val normalizedCookie = normalizeDeezerCookieInput(cookie).orEmpty()
+                val query =
+                    listOfNotNull(
+                        title.takeIf { it.isNotBlank() },
+                        artist?.takeIf { it.isNotBlank() },
+                        album?.takeIf { it.isNotBlank() },
+                    ).joinToString(" ")
+
+                val trackCandidates =
+                    apiData(
+                        "search/track",
+                        normalizedCookie,
+                        mapOf("q" to query, "limit" to "10"),
+                    ).mapNotNull { track ->
+                        val trackAlbum = track.optJSONObject("album")
+                        val artwork = trackAlbum?.deezerCoverUrl() ?: track.deezerCoverUrl() ?: return@mapNotNull null
+                        DeezerArtworkCandidate(
+                            artwork = artwork,
+                            score =
+                                deezerArtworkScore(
+                                    normalizedTitle = normalizedTitle,
+                                    normalizedArtist = artist?.normalizedArtworkMatch().orEmpty(),
+                                    normalizedAlbum = album?.normalizedArtworkMatch().orEmpty(),
+                                    itemTitle = track.stringOrNull("title") ?: track.stringOrNull("title_short"),
+                                    itemArtists = listOfNotNull(track.optJSONObject("artist")?.stringOrNull("name"), track.stringOrNull("artist")),
+                                    itemAlbum = trackAlbum?.stringOrNull("title"),
+                                ),
+                        )
+                    }
+
+                val albumCandidates =
+                    album
+                        ?.takeIf { it.isNotBlank() }
+                        ?.let { albumQuery ->
+                            apiData(
+                                "search/album",
+                                normalizedCookie,
+                                mapOf("q" to listOfNotNull(albumQuery, artist).joinToString(" "), "limit" to "10"),
+                            ).mapNotNull { albumJson ->
+                                val artwork = albumJson.deezerCoverUrl() ?: return@mapNotNull null
+                                DeezerArtworkCandidate(
+                                    artwork = artwork,
+                                    score =
+                                        deezerArtworkScore(
+                                            normalizedTitle = albumQuery.normalizedArtworkMatch(),
+                                            normalizedArtist = artist?.normalizedArtworkMatch().orEmpty(),
+                                            normalizedAlbum = albumQuery.normalizedArtworkMatch(),
+                                            itemTitle = albumJson.stringOrNull("title"),
+                                            itemArtists = listOfNotNull(albumJson.optJSONObject("artist")?.stringOrNull("name")),
+                                            itemAlbum = albumJson.stringOrNull("title"),
+                                        ),
+                                )
+                            }
+                        }.orEmpty()
+
+                val threshold = if (artist.isNullOrBlank()) 5 else 8
+                (trackCandidates + albumCandidates)
+                    .maxByOrNull { it.score }
+                    ?.takeIf { it.score >= threshold }
+                    ?.artwork
+            }
+        }.getOrNull()
+
     suspend fun loadCollection(
         collectionId: String,
         type: String,
@@ -669,6 +743,59 @@ object DeezerHomeFeedProvider {
         } else {
             "https://cdn-images.dzcdn.net/images/$type/$md5/1000x1000-000000-80-0-0.jpg"
         }
+
+    private data class DeezerArtworkCandidate(
+        val artwork: String,
+        val score: Int,
+    )
+
+    private fun deezerArtworkScore(
+        normalizedTitle: String,
+        normalizedArtist: String,
+        normalizedAlbum: String,
+        itemTitle: String?,
+        itemArtists: List<String>,
+        itemAlbum: String?,
+    ): Int {
+        val candidateTitle = itemTitle?.normalizedArtworkMatch().orEmpty()
+        val candidateAlbum = itemAlbum?.normalizedArtworkMatch().orEmpty()
+        val candidateArtists = itemArtists.map { it.normalizedArtworkMatch() }.filter { it.isNotBlank() }
+
+        var score = 0
+        if (candidateTitle == normalizedTitle) {
+            score += 6
+        } else if (
+            candidateTitle.isNotBlank() &&
+            (candidateTitle.contains(normalizedTitle) || normalizedTitle.contains(candidateTitle))
+        ) {
+            score += 3
+        }
+
+        if (normalizedArtist.isNotBlank() && candidateArtists.any { it == normalizedArtist }) {
+            score += 5
+        } else if (normalizedArtist.isNotBlank() && candidateArtists.any { it.contains(normalizedArtist) || normalizedArtist.contains(it) }) {
+            score += 3
+        }
+
+        if (normalizedAlbum.isNotBlank()) {
+            if (candidateAlbum == normalizedAlbum || candidateTitle == normalizedAlbum) {
+                score += 4
+            } else if (
+                candidateAlbum.isNotBlank() &&
+                (candidateAlbum.contains(normalizedAlbum) || normalizedAlbum.contains(candidateAlbum))
+            ) {
+                score += 2
+            }
+        }
+
+        return score
+    }
+
+    private fun String.normalizedArtworkMatch(): String =
+        lowercase()
+            .replace(Regex("""\([^)]*\)|\[[^]]*]"""), " ")
+            .replace(Regex("""[^a-z0-9]+"""), " ")
+            .trim()
 
     private fun YTItem.thumbnail(): String? =
         when (this) {

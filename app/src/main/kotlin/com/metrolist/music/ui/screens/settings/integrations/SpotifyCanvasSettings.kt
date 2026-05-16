@@ -34,15 +34,19 @@ import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import com.metrolist.music.LocalPlayerAwareWindowInsets
 import com.metrolist.music.R
+import com.metrolist.music.constants.CanvasArtworkPriority
+import com.metrolist.music.constants.CanvasArtworkPriorityKey
 import com.metrolist.music.constants.EmbedAnimatedCanvasKey
 import com.metrolist.music.constants.SpotifyCanvasEnabledKey
 import com.metrolist.music.constants.SpotifyCookieKey
+import com.metrolist.music.ui.component.EnumDialog
 import com.metrolist.music.ui.component.IconButton
 import com.metrolist.music.ui.component.InfoLabel
 import com.metrolist.music.ui.component.Material3SettingsGroup
 import com.metrolist.music.ui.component.Material3SettingsItem
 import com.metrolist.music.ui.component.TextFieldDialog
 import com.metrolist.music.ui.utils.backToMain
+import com.metrolist.music.utils.rememberEnumPreference
 import com.metrolist.music.utils.rememberPreference
 import com.metrolist.music.utils.spotify.isSpotifyCookieConfigured
 import com.metrolist.music.utils.spotify.normalizeSpotifyCookieInput
@@ -56,10 +60,12 @@ fun SpotifyCanvasSettings(
         rememberPreference(SpotifyCanvasEnabledKey, false)
     val (embedAnimatedCanvas, onEmbedAnimatedCanvasChange) =
         rememberPreference(EmbedAnimatedCanvasKey, false)
+    var canvasArtworkPriority by rememberEnumPreference(CanvasArtworkPriorityKey, CanvasArtworkPriority.APPLE_MUSIC)
     var spotifyCookie by rememberPreference(SpotifyCookieKey, "")
     val cookieConfigured = isSpotifyCookieConfigured(spotifyCookie)
 
     var showCookieDialog by rememberSaveable { mutableStateOf(false) }
+    var showPriorityDialog by rememberSaveable { mutableStateOf(false) }
 
     fun updateCanvasEnabled(enabled: Boolean) {
         if (enabled && !cookieConfigured) {
@@ -89,6 +95,21 @@ fun SpotifyCanvasSettings(
             extraContent = {
                 InfoLabel(text = stringResource(R.string.spotify_canvas_cookie_helper))
             },
+        )
+    }
+
+    if (showPriorityDialog) {
+        EnumDialog(
+            onDismiss = { showPriorityDialog = false },
+            onSelect = { value ->
+                canvasArtworkPriority = value
+                showPriorityDialog = false
+            },
+            title = stringResource(R.string.canvas_artwork_priority),
+            current = canvasArtworkPriority,
+            values = CanvasArtworkPriority.entries,
+            valueText = { it.labelText() },
+            valueDescription = { it.descriptionText() },
         )
     }
 
@@ -142,6 +163,14 @@ fun SpotifyCanvasSettings(
                         icon = painterResource(R.drawable.slow_motion_video),
                         onClick = {
                             updateCanvasEnabled(!spotifyCanvasEnabled)
+                        },
+                    ),
+                    Material3SettingsItem(
+                        title = { Text(stringResource(R.string.canvas_artwork_priority)) },
+                        description = { Text(canvasArtworkPriority.descriptionText()) },
+                        icon = painterResource(R.drawable.slow_motion_video),
+                        onClick = {
+                            showPriorityDialog = true
                         },
                     ),
                     Material3SettingsItem(
@@ -230,3 +259,17 @@ fun SpotifyCanvasSettings(
         },
     )
 }
+
+@Composable
+private fun CanvasArtworkPriority.labelText(): String =
+    when (this) {
+        CanvasArtworkPriority.APPLE_MUSIC -> stringResource(R.string.canvas_artwork_priority_apple)
+        CanvasArtworkPriority.SPOTIFY -> stringResource(R.string.canvas_artwork_priority_spotify)
+    }
+
+@Composable
+private fun CanvasArtworkPriority.descriptionText(): String =
+    when (this) {
+        CanvasArtworkPriority.APPLE_MUSIC -> stringResource(R.string.canvas_artwork_priority_apple_desc)
+        CanvasArtworkPriority.SPOTIFY -> stringResource(R.string.canvas_artwork_priority_spotify_desc)
+    }

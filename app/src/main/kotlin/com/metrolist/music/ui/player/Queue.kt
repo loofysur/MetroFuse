@@ -227,6 +227,7 @@ fun Queue(
 
     val coroutineScope = rememberCoroutineScope()
     var showSleepTimerDialog by remember { mutableStateOf(false) }
+    var showProviderMatchDialog by rememberSaveable { mutableStateOf(false) }
     val sleepTimerDefault by rememberPreference(SleepTimerDefaultKey, 30f)
     var sleepTimerValue by remember { mutableFloatStateOf(sleepTimerDefault) }
     val isAtDefault by remember {
@@ -351,6 +352,20 @@ fun Queue(
                         icon = R.drawable.lyrics,
                         onClick = { onToggleLyrics() },
                         isActive = showInlineLyrics,
+                        shape = middleShape,
+                        modifier = Modifier.size(buttonSize),
+                        textButtonColor = textButtonColor,
+                        iconButtonColor = iconButtonColor,
+                        iconSize = iconSize,
+                        textBackgroundColor = TextBackgroundColor,
+                        playerBackground = playerBackground,
+                    )
+
+                    PlayerQueueButton(
+                        icon = R.drawable.manage_search,
+                        onClick = { showProviderMatchDialog = true },
+                        isActive = false,
+                        enabled = mediaMetadata != null && !isListenTogetherGuest,
                         shape = middleShape,
                         modifier = Modifier.size(buttonSize),
                         textButtonColor = textButtonColor,
@@ -537,7 +552,42 @@ fun Queue(
                             )
                         }
                     }
+
+                    TextButton(
+                        enabled = mediaMetadata != null && !isListenTogetherGuest,
+                        onClick = { showProviderMatchDialog = true },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(
+                                painter = painterResource(id = R.drawable.manage_search),
+                                contentDescription = null,
+                                modifier = Modifier.size(20.dp),
+                                tint = TextBackgroundColor,
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = stringResource(R.string.choose_audio_source),
+                                color = TextBackgroundColor,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.basicMarquee(),
+                            )
+                        }
+                    }
                 }
+            }
+
+            mediaMetadata?.takeIf { showProviderMatchDialog }?.let { metadata ->
+                ProviderMatchDialog(
+                    mediaMetadata = metadata,
+                    onDismiss = { showProviderMatchDialog = false },
+                )
             }
 
             if (showSleepTimerDialog) {
@@ -1331,7 +1381,9 @@ private fun PlayerQueueButton(
                     iconButtonColor
                 } else {
                     when (playerBackground) {
-                        PlayerBackgroundStyle.BLUR, PlayerBackgroundStyle.GRADIENT -> {
+                        PlayerBackgroundStyle.BLUR,
+                        PlayerBackgroundStyle.GALAXY_BLUR,
+                        PlayerBackgroundStyle.GRADIENT -> {
                             Color.White
                         }
 

@@ -86,6 +86,7 @@ fun SpotifyCanvasVideoBackground(
     media: SpotifyCanvasMedia,
     shouldPlay: Boolean,
     modifier: Modifier = Modifier,
+    scrimAlpha: Float = 0.16f,
 ) {
     val canvasMedia =
         remember(media.url, media.headers) {
@@ -144,7 +145,7 @@ fun SpotifyCanvasVideoBackground(
             modifier =
                 Modifier
                     .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.16f)),
+                    .background(Color.Black.copy(alpha = scrimAlpha.coerceIn(0f, 1f))),
         )
     }
 }

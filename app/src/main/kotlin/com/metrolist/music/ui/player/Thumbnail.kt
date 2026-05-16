@@ -65,10 +65,13 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -87,12 +90,12 @@ import com.metrolist.music.constants.PlayerHorizontalPadding
 import com.metrolist.music.constants.SeekExtraSeconds
 import com.metrolist.music.constants.SwipeThumbnailKey
 import com.metrolist.music.constants.ThumbnailCornerRadius
-import com.metrolist.music.constants.TidalArtworkFallbackEnabledKey
 import com.metrolist.music.listentogether.RoomRole
 import com.metrolist.music.ui.component.CastButton
 import com.metrolist.music.utils.rememberEnumPreference
 import com.metrolist.music.utils.rememberPreference
 import kotlinx.coroutines.delay
+import okhttp3.OkHttpClient
 
 /**
  * Pre-calculated thumbnail dimensions to avoid repeated calculations during recomposition.
@@ -197,6 +200,7 @@ private fun getTextColor(playerBackground: PlayerBackgroundStyle): Color {
     return when (playerBackground) {
         PlayerBackgroundStyle.DEFAULT -> MaterialTheme.colorScheme.onBackground
         PlayerBackgroundStyle.BLUR -> Color.White
+        PlayerBackgroundStyle.GALAXY_BLUR -> Color.White
         PlayerBackgroundStyle.GRADIENT -> Color.White
     }
 }
@@ -221,7 +225,7 @@ fun Thumbnail(
     val canSkipPrevious by playerConnection.canSkipPrevious.collectAsStateWithLifecycle()
     val canSkipNext by playerConnection.canSkipNext.collectAsStateWithLifecycle()
     val appleCanvasUrl by playerConnection.service.currentAppleCanvasUrl.collectAsStateWithLifecycle()
-    val tidalArtworkUrl by playerConnection.service.currentTidalArtworkUrl.collectAsStateWithLifecycle()
+    val preferredArtworkUrl by playerConnection.service.currentPreferredArtworkUrl.collectAsStateWithLifecycle()
 
     // Preferences - computed once
     // Disable swipe for Listen Together guests
@@ -229,7 +233,6 @@ fun Thumbnail(
     val swipeThumbnail = swipeThumbnailPref && !isListenTogetherGuest
     val hidePlayerThumbnail by rememberPreference(HidePlayerThumbnailKey, false)
     val cropAlbumArt by rememberPreference(CropAlbumArtKey, false)
-    val tidalArtworkFallbackEnabled by rememberPreference(TidalArtworkFallbackEnabledKey, false)
     val playerBackground by rememberEnumPreference(
         key = PlayerBackgroundStyleKey,
         defaultValue = PlayerBackgroundStyle.DEFAULT
@@ -415,9 +418,7 @@ fun Thumbnail(
                                 currentMediaId = mediaMetadata?.id,
                                 currentMediaThumbnail = mediaMetadata?.thumbnailUrl,
                                 currentAppleCanvasUrl = appleCanvasUrl,
-                                currentTidalArtworkUrl =
-                                    tidalArtworkUrl
-                                        .takeIf { tidalArtworkFallbackEnabled && appleCanvasUrl.isNullOrBlank() },
+                                currentPreferredArtworkUrl = preferredArtworkUrl,
                             )
                         }
                     }
@@ -516,7 +517,7 @@ private fun ThumbnailItem(
     currentMediaId: String? = null,
     currentMediaThumbnail: String? = null,
     currentAppleCanvasUrl: String? = null,
-    currentTidalArtworkUrl: String? = null,
+    currentPreferredArtworkUrl: String? = null,
     modifier: Modifier = Modifier,
 ) {
     val incrementalSeekSkipEnabled by rememberPreference(SeekExtraSeconds, defaultValue = false)
@@ -582,7 +583,7 @@ private fun ThumbnailItem(
             } else {
                 val artworkUriToUse =
                     when {
-                        item.mediaId == currentMediaId && !currentTidalArtworkUrl.isNullOrBlank() -> currentTidalArtworkUrl
+                        item.mediaId == currentMediaId && !currentPreferredArtworkUrl.isNullOrBlank() -> currentPreferredArtworkUrl
                         item.mediaId == currentMediaId && !currentMediaThumbnail.isNullOrBlank() -> currentMediaThumbnail
                         else -> item.mediaMetadata.artworkUri?.toString()
                     }
@@ -681,7 +682,31 @@ private fun AppleMusicCanvasVideo(
         }
     }
     val player = remember(canvasUrl) {
-        ExoPlayer.Builder(context).build().apply {
+        val isRemoteCanvas =
+            canvasUrl.startsWith("http://", ignoreCase = true) ||
+                canvasUrl.startsWith("https://", ignoreCase = true)
+        val mediaSourceFactory =
+            if (isRemoteCanvas) {
+                DefaultMediaSourceFactory(
+                    OkHttpDataSource
+                        .Factory(OkHttpClient())
+                        .setDefaultRequestProperties(
+                            mapOf(
+                                "Origin" to "https://music.apple.com",
+                                "Referer" to "https://music.apple.com/",
+                                "User-Agent" to "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 Chrome/147 Mobile Safari/537.36",
+                            ),
+                        ),
+                )
+            } else {
+                DefaultMediaSourceFactory(context)
+            }
+
+        ExoPlayer.Builder(context)
+            .setMediaSourceFactory(mediaSourceFactory)
+            .build()
+            .apply {
+            setAudioAttributes(AudioAttributes.DEFAULT, false)
             repeatMode = Player.REPEAT_MODE_ONE
             volume = 0f
             playWhenReady = true

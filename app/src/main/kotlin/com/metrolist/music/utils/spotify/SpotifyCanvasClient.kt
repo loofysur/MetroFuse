@@ -27,6 +27,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
@@ -53,6 +54,12 @@ import kotlin.math.abs
 data class SpotifyCanvasMedia(
     val url: String,
     val headers: Map<String, String>,
+)
+
+data class SpotifyMixMetadata(
+    val bpm: Float? = null,
+    val keySignature: String? = null,
+    val timeSignature: Int? = null,
 )
 
 fun normalizeSpotifyCookieInput(input: String): String? {
@@ -244,6 +251,10 @@ object SpotifyCanvasClient {
     private var activeWebCookie: String? = null
     private var cachedNuance: SpotifyNuance? = null
 
+    suspend fun resolveSearch(query: String, cookie: String): String? {
+        return searchTracks(query, cookie).firstOrNull()?.uri
+    }
+
     private data class CachedString(
         val value: String,
         val cachedAt: Long,
@@ -267,6 +278,12 @@ object SpotifyCanvasClient {
 
     private val trackUriCache = ConcurrentHashMap<String, CachedString>()
     private val canvasUrlCache = ConcurrentHashMap<String, CachedString>()
+    private val audioFeaturesCache = ConcurrentHashMap<String, CachedMixMetadata>()
+
+    private data class CachedMixMetadata(
+        val value: SpotifyMixMetadata?,
+        val cachedAt: Long,
+    )
 
     suspend fun resolveBackground(
         mediaMetadata: MediaMetadata,
@@ -281,6 +298,31 @@ object SpotifyCanvasClient {
             url = canvasUrl,
             headers = buildCanvasHeaders(trackUri),
         )
+    }
+
+    suspend fun resolveMixMetadata(
+        mediaMetadata: MediaMetadata,
+        cookie: String,
+    ): SpotifyMixMetadata? {
+        if (mediaMetadata.isEpisode || mediaMetadata.isVideoSong) return null
+        val normalizedCookie = normalizeSpotifyCookieInput(cookie) ?: return null
+        val trackUri =
+            mediaMetadata.id.spotifyTrackUri()
+                ?: buildExpectation(mediaMetadata)?.let { resolveTrackUri(it, normalizedCookie) }
+                ?: return null
+
+        return resolveAudioFeatures(trackUri, normalizedCookie)
+    }
+
+    suspend fun resolveTrackUriForMix(
+        mediaMetadata: MediaMetadata,
+        cookie: String,
+    ): String? {
+        if (mediaMetadata.isEpisode || mediaMetadata.isVideoSong) return null
+        mediaMetadata.id.spotifyTrackUri()?.let { return it }
+        val normalizedCookie = normalizeSpotifyCookieInput(cookie) ?: return null
+        val expectation = buildExpectation(mediaMetadata) ?: return null
+        return resolveTrackUri(expectation, normalizedCookie)
     }
 
     suspend fun resolveHomePage(cookie: String): HomePage? {
@@ -881,6 +923,54 @@ object SpotifyCanvasClient {
 
         canvasUrlCache[trackUri] = CachedString(canvasUrl.orEmpty(), now)
         return canvasUrl
+    }
+
+    private suspend fun resolveAudioFeatures(
+        trackUri: String,
+        cookie: String,
+    ): SpotifyMixMetadata? {
+        val trackId = trackUri.spotifyTrackId() ?: return null
+        val now = System.currentTimeMillis()
+        audioFeaturesCache[trackId]
+            ?.takeIf { now - it.cachedAt < CACHE_TTL_MS }
+            ?.let { return it.value }
+
+        val result =
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    val request =
+                        Request
+                            .Builder()
+                            .url("https://api.spotify.com/v1/audio-features/$trackId")
+                            .header("User-Agent", WEB_USER_AGENT)
+                            .header("Accept", "application/json")
+                            .header("Authorization", "Bearer ${ensureWebToken(cookie)}")
+                            .get()
+                            .build()
+
+                    client.newCall(request).execute().use { response ->
+                        val body = response.body?.string().orEmpty()
+                        if (!response.isSuccessful) {
+                            Timber.tag("SpotifyMix").d(
+                                "Spotify audio-features unavailable for $trackId: ${response.code} ${body.take(120)}",
+                            )
+                            return@withContext null
+                        }
+
+                        val root = json.parseToJsonElement(body).jsonObject
+                        SpotifyMixMetadata(
+                            bpm = root.double("tempo")?.toFloat()?.takeIf { it in 40f..240f },
+                            keySignature = spotifyKeySignature(root.int("key"), root.int("mode")),
+                            timeSignature = root.int("time_signature")?.takeIf { it in 1..12 },
+                        ).takeIf { it.bpm != null || it.keySignature != null || it.timeSignature != null }
+                    }
+                }
+            }.onFailure { error ->
+                Timber.tag("SpotifyMix").d(error, "Spotify audio-features lookup failed for $trackId")
+            }.getOrNull()
+
+        audioFeaturesCache[trackId] = CachedMixMetadata(result, now)
+        return result
     }
 
     private suspend fun searchTracks(
@@ -1810,6 +1900,10 @@ private fun JsonObject.int(name: String): Int? =
     (this[name] as? kotlinx.serialization.json.JsonPrimitive)
         ?.intOrNull
 
+private fun JsonObject.double(name: String): Double? =
+    (this[name] as? kotlinx.serialization.json.JsonPrimitive)
+        ?.doubleOrNull
+
 private fun JsonObject.long(name: String): Long? =
     (this[name] as? kotlinx.serialization.json.JsonPrimitive)
         ?.longOrNull
@@ -1836,6 +1930,46 @@ private fun sanitize(value: String): String =
         ).replace(Regex("\\b(feat\\.?|ft\\.?)\\b", RegexOption.IGNORE_CASE), " ")
         .replace(Regex("\\s+"), " ")
         .trim()
+
+private fun String.spotifyTrackUri(): String? {
+    val trackId = spotifyTrackId() ?: return null
+    return "spotify:track:$trackId"
+}
+
+private fun String.spotifyTrackId(): String? =
+    when {
+        startsWith("spotify:track:", ignoreCase = true) -> substringAfterLast(':')
+        contains("open.spotify.com/track/", ignoreCase = true) ->
+            substringAfter("open.spotify.com/track/", "")
+                .substringBefore('?')
+                .substringBefore('/')
+        matches(Regex("^[A-Za-z0-9]{22}$")) -> this
+        else -> null
+    }?.takeIf { it.matches(Regex("^[A-Za-z0-9]{22}$")) }
+
+private fun spotifyKeySignature(
+    key: Int?,
+    mode: Int?,
+): String? {
+    if (key == null || key !in 0..11) return null
+    val pitch =
+        when (key) {
+            0 -> "C"
+            1 -> "C#"
+            2 -> "D"
+            3 -> "D#"
+            4 -> "E"
+            5 -> "F"
+            6 -> "F#"
+            7 -> "G"
+            8 -> "G#"
+            9 -> "A"
+            10 -> "A#"
+            11 -> "B"
+            else -> return null
+        }
+    return if (mode == 0) "${pitch}m" else pitch
+}
 
 private fun overlap(
     left: String,

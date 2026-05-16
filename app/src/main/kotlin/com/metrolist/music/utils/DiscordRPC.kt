@@ -34,6 +34,8 @@ class DiscordRPC(
         button2Visible: Boolean = true,
         activityType: String = "listening",
         activityName: String = "",
+        largeImageUrl: String? = song.song.thumbnailUrl,
+        largeImageFallbackUrl: String? = song.song.thumbnailUrl,
     ) = runCatching {
         val currentTime = System.currentTimeMillis()
 
@@ -52,17 +54,17 @@ class DiscordRPC(
         val buttonsList = mutableListOf<Pair<String, String>>()
         if (button1Visible) {
             val resolvedText = resolveVariables(
-                button1Text.ifEmpty { "Listen on YouTube Music" },
+                button1Text.ifEmpty { context.getString(R.string.discord_default_button_1) },
                 song
             )
             buttonsList.add(resolvedText to "https://music.youtube.com/watch?v=${song.song.id}")
         }
         if (button2Visible) {
             val resolvedText = resolveVariables(
-                button2Text.ifEmpty { "Visit Metrolist" },
+                button2Text.ifEmpty { context.getString(R.string.discord_default_button_2) },
                 song
             )
-            buttonsList.add(resolvedText to "https://github.com/MetrolistGroup/Metrolist")
+            buttonsList.add(resolvedText to context.getString(R.string.discord_default_button_2_url))
         }
 
         val type = when (activityType) {
@@ -75,13 +77,17 @@ class DiscordRPC(
         val name = activityName.ifEmpty {
             context.getString(R.string.app_name).removeSuffix(" Debug")
         }
+        val largeImage =
+            largeImageUrl
+                ?.takeIf { it.isNotBlank() }
+                ?.let { RpcImage.ExternalImage(it, fallbackDiscordAsset = largeImageFallbackUrl) }
 
         setActivity(
             name = name,
             details = songTitleWithRate,
             state = song.artists.joinToString { it.name },
             detailsUrl = "https://music.youtube.com/watch?v=${song.song.id}",
-            largeImage = song.song.thumbnailUrl?.let { RpcImage.ExternalImage(it) },
+            largeImage = largeImage,
             smallImage = song.artists.firstOrNull()?.thumbnailUrl?.let { RpcImage.ExternalImage(it) },
             largeText = song.album?.title,
             smallText = song.artists.firstOrNull()?.name,

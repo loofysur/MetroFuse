@@ -55,6 +55,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -63,6 +64,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -91,6 +93,8 @@ import com.metrolist.music.LocalListenTogetherManager
 import com.metrolist.music.LocalPlayerAwareWindowInsets
 import com.metrolist.music.LocalPlayerConnection
 import com.metrolist.music.R
+import com.metrolist.music.apple.AppleMusicCanvasProvider
+import com.metrolist.music.constants.AppleMusicArtistMotionBackgroundKey
 import com.metrolist.music.constants.AppBarHeight
 import com.metrolist.music.constants.HideExplicitKey
 import com.metrolist.music.constants.ShowArtistDescriptionKey
@@ -120,15 +124,24 @@ import com.metrolist.music.ui.menu.YouTubeAlbumMenu
 import com.metrolist.music.ui.menu.YouTubeArtistMenu
 import com.metrolist.music.ui.menu.YouTubePlaylistMenu
 import com.metrolist.music.ui.menu.YouTubeSongMenu
+import com.metrolist.music.ui.player.SpotifyCanvasVideoBackground
 import com.metrolist.music.ui.utils.backToMain
 import com.metrolist.music.ui.utils.fadingEdge
 import com.metrolist.music.ui.utils.isScrollingUp
 import com.metrolist.music.ui.utils.resize
 import com.metrolist.music.utils.rememberPreference
+import com.metrolist.music.utils.spotify.SpotifyCanvasMedia
 import com.metrolist.music.viewmodels.ArtistViewModel
 import com.valentinilk.shimmer.shimmer
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+private val AppleMusicArtistMotionHeaders =
+    mapOf(
+        "Origin" to "https://music.apple.com",
+        "Referer" to "https://music.apple.com/",
+        "User-Agent" to "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 Chrome/147 Mobile Safari/537.36",
+    )
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -155,6 +168,7 @@ fun ArtistScreen(
     val showArtistDescription by rememberPreference(key = ShowArtistDescriptionKey, defaultValue = true)
     val showArtistSubscriberCount by rememberPreference(key = ShowArtistSubscriberCountKey, defaultValue = true)
     val showMonthlyListeners by rememberPreference(key = ShowMonthlyListenersKey, defaultValue = true)
+    val appleMusicArtistMotionBackground by rememberPreference(key = AppleMusicArtistMotionBackgroundKey, defaultValue = false)
 
     val lazyListState = rememberLazyListState()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -282,10 +296,30 @@ fun ArtistScreen(
                 item(key = "header") {
                     val thumbnail = artistPage?.artist?.thumbnail ?: libraryArtist?.artist?.thumbnailUrl
                     val artistName = artistPage?.artist?.title ?: libraryArtist?.artist?.name
+                    val artistMotionUrl by produceState<String?>(
+                        initialValue =
+                            if (appleMusicArtistMotionBackground && !showLocal && !artistName.isNullOrBlank()) {
+                                AppleMusicCanvasProvider.getCachedArtistMotion(artistName)?.animated
+                            } else {
+                                null
+                            },
+                        appleMusicArtistMotionBackground,
+                        showLocal,
+                        artistName,
+                    ) {
+                        value = null
+                        if (!appleMusicArtistMotionBackground || showLocal || artistName.isNullOrBlank()) {
+                            return@produceState
+                        }
+                        value = AppleMusicCanvasProvider
+                            .getArtistMotionByName(artistName)
+                            ?.animated
+                    }
+                    val hasHeroArtwork = thumbnail != null || artistMotionUrl != null
 
                     Box {
                         // Artist Image with offset
-                        if (thumbnail != null) {
+                        if (hasHeroArtwork) {
                             Box(
                                 modifier =
                                     Modifier
@@ -293,19 +327,35 @@ fun ArtistScreen(
                                         .aspectRatio(1f)
                                         .offset {
                                             IntOffset(x = 0, y = headerOffset)
-                                        },
+                                        }
+                                        .fadingEdge(
+                                            bottom = 200.dp,
+                                        ),
                             ) {
-                                AsyncImage(
-                                    model = thumbnail.resize(1200, 1200),
-                                    contentDescription = null,
-                                    modifier =
-                                        Modifier
-                                            .fillMaxWidth()
-                                            .align(Alignment.TopCenter)
-                                            .fadingEdge(
-                                                bottom = 200.dp,
+                                if (thumbnail != null) {
+                                    AsyncImage(
+                                        model = thumbnail.resize(1200, 1200),
+                                        contentDescription = null,
+                                        contentScale = ContentScale.Crop,
+                                        modifier =
+                                            Modifier
+                                                .fillMaxSize()
+                                                .align(Alignment.TopCenter),
+                                    )
+                                }
+
+                                artistMotionUrl?.let { motionUrl ->
+                                    SpotifyCanvasVideoBackground(
+                                        media =
+                                            SpotifyCanvasMedia(
+                                                url = motionUrl,
+                                                headers = AppleMusicArtistMotionHeaders,
                                             ),
-                                )
+                                        shouldPlay = true,
+                                        modifier = Modifier.fillMaxSize(),
+                                        scrimAlpha = 0.08f,
+                                    )
+                                }
                             }
                         }
 
@@ -316,7 +366,7 @@ fun ArtistScreen(
                                     .fillMaxWidth()
                                     .padding(
                                         top =
-                                            if (thumbnail != null) {
+                                            if (hasHeroArtwork) {
                                                 // Position content at the bottom part of the image
                                                 // Using screen width to calculate aspect ratio height minus overlap
                                                 LocalResources.current.displayMetrics.widthPixels.let { screenWidth ->

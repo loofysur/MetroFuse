@@ -18,8 +18,10 @@ import androidx.core.net.toUri
 import androidx.media3.datasource.cache.CacheSpan
 import androidx.media3.datasource.cache.SimpleCache
 import com.metrolist.music.apple.AppleMusicCanvasProvider
+import com.metrolist.music.constants.DeezerCookieKey
 import com.metrolist.music.constants.EmbedAnimatedCanvasKey
 import com.metrolist.music.constants.SpotifyCookieKey
+import com.metrolist.music.constants.TidalCookieKey
 import com.metrolist.music.db.MusicDatabase
 import com.metrolist.music.db.entities.AlbumArtistMap
 import com.metrolist.music.db.entities.AlbumEntity
@@ -35,6 +37,8 @@ import com.metrolist.music.db.entities.SongEntity
 import com.metrolist.music.lyrics.LyricsHelper
 import com.metrolist.music.models.MediaMetadata
 import com.metrolist.music.models.toMediaMetadata
+import com.metrolist.music.providers.DeezerHomeFeedProvider
+import com.metrolist.music.providers.TidalHomeFeedProvider
 import com.metrolist.music.utils.dataStore
 import com.metrolist.music.utils.get
 import com.metrolist.music.utils.spotify.SpotifyCanvasClient
@@ -595,6 +599,7 @@ object PublicDownloadExporter {
             .map { it.name.trim() }
             .filter { it.isNotBlank() }
         val lyrics = lyricsFor(database, lyricsHelper, source)
+        val preferredArtworkUrl = preferredExternalArtworkFor(context, source)
         return EmbeddedAudioMetadata(
             title = source.song.title,
             artists = artistNames,
@@ -605,7 +610,7 @@ object PublicDownloadExporter {
             artwork = artworkFor(
                 context = context,
                 artworkKey = source.song.id,
-                thumbnailUrl = source.song.thumbnailUrl ?: source.album?.thumbnailUrl,
+                thumbnailUrl = preferredArtworkUrl ?: source.song.thumbnailUrl ?: source.album?.thumbnailUrl,
             ),
             canvas = canvasFor(
                 context = context,
@@ -642,6 +647,35 @@ object PublicDownloadExporter {
             )
         }
         return LyricsForExport(lyrics, lyricsWithProvider.provider)
+    }
+
+    private suspend fun preferredExternalArtworkFor(
+        context: Context,
+        source: Song,
+    ): String? {
+        if (source.song.isLocal || source.song.isEpisode || source.song.isVideo) return null
+
+        val artist = source.orderedArtists.firstOrNull()?.name?.takeIf { it.isNotBlank() }
+        val album = source.song.albumName ?: source.album?.title
+        val tidalArtwork =
+            withTimeoutOrNull(2_750L) {
+                TidalHomeFeedProvider.resolveAlbumArtwork(
+                    title = source.song.title,
+                    artist = artist,
+                    album = album,
+                    cookie = context.dataStore.get(TidalCookieKey, ""),
+                )
+            }?.takeIf { it.isNotBlank() }
+
+        return tidalArtwork
+            ?: withTimeoutOrNull(2_750L) {
+                DeezerHomeFeedProvider.resolveAlbumArtwork(
+                    title = source.song.title,
+                    artist = artist,
+                    album = album,
+                    cookie = context.dataStore.get(DeezerCookieKey, ""),
+                )
+            }?.takeIf { it.isNotBlank() }
     }
 
     private suspend fun deleteAudioCollectionDuplicate(
@@ -798,12 +832,14 @@ object PublicDownloadExporter {
                 song = mediaMetadata.title,
                 artist = artist,
                 album = album,
+                explicit = source.song.explicit.takeIf { it },
             )?.animated?.takeIf { it.isNotBlank() }
-                ?: withTimeoutOrNull(5_000L) {
+                ?: withTimeoutOrNull(6_500L) {
                     AppleMusicCanvasProvider.getBySongArtist(
                         song = mediaMetadata.title,
                         artist = artist,
                         album = album,
+                        explicit = source.song.explicit.takeIf { it },
                     )?.animated?.takeIf { it.isNotBlank() }
                 }
 

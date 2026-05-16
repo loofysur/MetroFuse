@@ -106,6 +106,10 @@ import com.metrolist.music.constants.AndroidAutoTargetPlaylistKey
 import com.metrolist.music.constants.AppleMusicFallbackEnabledKey
 import com.metrolist.music.constants.AudioNormalizationKey
 import com.metrolist.music.constants.AudioOffload
+import com.metrolist.music.constants.AudioProviderOrder
+import com.metrolist.music.constants.AudioProviderOrderItem
+import com.metrolist.music.constants.AudioProviderMatchOverridesKey
+import com.metrolist.music.constants.AudioProviderOrderKey
 import com.metrolist.music.constants.AudioQualityKey
 import com.metrolist.music.constants.AutoDownloadOnLikeKey
 import com.metrolist.music.constants.AutoLoadMoreKey
@@ -116,11 +120,13 @@ import com.metrolist.music.constants.CrossfadeEnabledKey
 import com.metrolist.music.constants.CrossfadeGaplessKey
 import com.metrolist.music.constants.DeezerAudioQuality
 import com.metrolist.music.constants.DeezerAudioQualityKey
+import com.metrolist.music.constants.DeezerCookieKey
 import com.metrolist.music.constants.DeezerResolverUrlKey
 import com.metrolist.music.constants.DisableLoadMoreWhenRepeatAllKey
 import com.metrolist.music.constants.DiscordActivityNameKey
 import com.metrolist.music.constants.DiscordActivityTypeKey
 import com.metrolist.music.constants.DiscordAdvancedModeKey
+import com.metrolist.music.constants.DiscordAnimatedCoversKey
 import com.metrolist.music.constants.DiscordAvatarKey
 import com.metrolist.music.constants.DiscordButton1TextKey
 import com.metrolist.music.constants.DiscordButton1VisibleKey
@@ -137,8 +143,15 @@ import com.metrolist.music.constants.HideVideoSongsKey
 import com.metrolist.music.constants.HistoryDuration
 import com.metrolist.music.constants.LastFMUseNowPlaying
 import com.metrolist.music.constants.MetroMixEnabledKey
+import com.metrolist.music.constants.MetroMixBarsKey
+import com.metrolist.music.constants.MetroMixEffectCurve
+import com.metrolist.music.constants.MetroMixEffectCurveKey
+import com.metrolist.music.constants.MetroMixEqCurve
+import com.metrolist.music.constants.MetroMixEqCurveKey
 import com.metrolist.music.constants.MetroMixPreset
 import com.metrolist.music.constants.MetroMixPresetKey
+import com.metrolist.music.constants.MetroMixVolumeCurve
+import com.metrolist.music.constants.MetroMixVolumeCurveKey
 import com.metrolist.music.constants.MediaSessionConstants
 import com.metrolist.music.constants.MediaSessionConstants.CommandAddToTargetPlaylist
 import com.metrolist.music.constants.MediaSessionConstants.CommandToggleLike
@@ -159,7 +172,6 @@ import com.metrolist.music.constants.InstagramCookieKey
 import com.metrolist.music.constants.InstagramAppIdKey
 import com.metrolist.music.constants.InstagramUserAgentKey
 import com.metrolist.music.constants.InstagramUuidKey
-import com.metrolist.music.constants.TidalArtworkFallbackEnabledKey
 import com.metrolist.music.constants.TidalAudioQuality
 import com.metrolist.music.constants.TidalAudioQualityKey
 import com.metrolist.music.constants.TidalCookieKey
@@ -181,6 +193,7 @@ import com.metrolist.music.constants.ShufflePlaylistFirstKey
 import com.metrolist.music.constants.SimilarContent
 import com.metrolist.music.constants.SkipSilenceInstantKey
 import com.metrolist.music.constants.SkipSilenceKey
+import com.metrolist.music.constants.SpotifyCookieKey
 import com.metrolist.music.constants.StopMusicOnTaskClearKey
 import com.metrolist.music.constants.StopOnProviderErrorKey
 import com.metrolist.music.deezer.DeezerAudioAwareDataSourceFactory
@@ -223,6 +236,10 @@ import com.metrolist.music.playback.queues.Queue
 import com.metrolist.music.playback.queues.YouTubeQueue
 import com.metrolist.music.playback.queues.filterExplicit
 import com.metrolist.music.playback.queues.filterVideoSongs
+import com.metrolist.music.providers.DeezerHomeFeedProvider
+import com.metrolist.music.providers.ProviderIsrc
+import com.metrolist.music.providers.ProviderMatchOverride
+import com.metrolist.music.providers.ProviderMatchOverrides
 import com.metrolist.music.providers.TidalHomeFeedProvider
 import com.metrolist.music.qobuz.QobuzAudioProvider
 import com.metrolist.music.soundcloud.SoundCloudAudioProvider
@@ -236,10 +253,12 @@ import com.metrolist.music.utils.NetworkConnectivityObserver
 import com.metrolist.music.utils.ScrobbleManager
 import com.metrolist.music.utils.SyncUtils
 import com.metrolist.music.utils.dataStore
+import com.metrolist.music.utils.discord.DiscordCanvasServerConverter
 import com.metrolist.music.utils.get
 import com.metrolist.music.utils.reportException
 import com.metrolist.music.widget.MetrolistWidgetManager
 import com.metrolist.music.widget.MusicWidgetReceiver
+import com.metrolist.music.utils.spotify.SpotifyCanvasClient
 import com.metrolist.music.youtube.YouTubeAudioProvider
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CancellationException
@@ -251,7 +270,9 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -270,7 +291,9 @@ import kotlinx.coroutines.plus
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
+import okhttp3.Request
 import timber.log.Timber
 import java.io.File
 import java.io.ObjectInputStream
@@ -278,6 +301,7 @@ import java.io.ObjectOutputStream
 import java.time.LocalDateTime
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import kotlin.math.PI
 import kotlin.math.cos
@@ -286,6 +310,8 @@ import kotlin.random.Random
 
 private const val INSTANT_SILENCE_SKIP_STEP_MS = 15_000L
 private const val INSTANT_SILENCE_SKIP_SETTLE_MS = 350L
+private const val APPLE_CANVAS_PREFETCH_WINDOW = 1
+private const val APPLE_CANVAS_PREFETCH_CACHE_LIMIT = 128
 
 private data class CrossfadePreferenceState(
     val crossfadeEnabled: Boolean,
@@ -293,11 +319,18 @@ private data class CrossfadePreferenceState(
     val crossfadeGapless: Boolean,
     val metroMixEnabled: Boolean,
     val metroMixPreset: MetroMixPreset,
+    val metroMixBars: Int,
+    val metroMixVolumeCurve: MetroMixVolumeCurve,
+    val metroMixEqCurve: MetroMixEqCurve,
+    val metroMixEffectCurve: MetroMixEffectCurve,
 )
 
 private data class MetroMixRuntimeProfile(
     val preset: MetroMixPreset?,
     val durationMs: Long,
+    val volumeCurve: MetroMixVolumeCurve = MetroMixVolumeCurve.AUTO,
+    val eqCurve: MetroMixEqCurve = MetroMixEqCurve.AUTO,
+    val effectCurve: MetroMixEffectCurve = MetroMixEffectCurve.AUTO,
 )
 
 @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
@@ -344,9 +377,14 @@ class MusicService :
     private var crossfadeDuration = 5000f
     private var crossfadeGapless = true
     private var activeMetroMixPreset: MetroMixPreset? = null
+    private var activeMetroMixBars = 8
+    private var activeMetroMixVolumeCurve = MetroMixVolumeCurve.AUTO
+    private var activeMetroMixEqCurve = MetroMixEqCurve.AUTO
+    private var activeMetroMixEffectCurve = MetroMixEffectCurve.AUTO
     private var pendingMetroMixProfile: MetroMixRuntimeProfile? = null
     private var activeCrossfadeDurationMs = 5000L
     private var activeMetroMixRuntimePreset: MetroMixPreset? = null
+    private var activeMetroMixRuntimeProfile: MetroMixRuntimeProfile? = null
     private var crossfadeTriggerJob: Job? = null
     private var crossfadePrepareJob: Job? = null
 
@@ -380,8 +418,14 @@ class MusicService :
 
     val currentMediaMetadata = MutableStateFlow<com.metrolist.music.models.MediaMetadata?>(null)
     val currentAppleCanvasUrl = MutableStateFlow<String?>(null)
+    val currentAppleTallCanvasUrl = MutableStateFlow<String?>(null)
     val currentEmbeddedCanvasUrl = MutableStateFlow<String?>(null)
-    val currentTidalArtworkUrl = MutableStateFlow<String?>(null)
+    val currentPreferredArtworkUrl = MutableStateFlow<String?>(null)
+    val currentTidalArtworkUrl = currentPreferredArtworkUrl
+    private val preferredArtworkCache =
+        object : LinkedHashMap<String, String?>(256, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String?>): Boolean = size > 256
+        }
     private val currentSong =
         currentMediaMetadata
             .flatMapLatest { mediaMetadata ->
@@ -432,6 +476,7 @@ class MusicService :
         crossfadeJob = null
         pendingMetroMixProfile = null
         activeMetroMixRuntimePreset = null
+        activeMetroMixRuntimeProfile = null
 
         if (secondaryPlayer != null) {
             cleanupSecondaryCrossfadePlayer(scheduleNext = false)
@@ -503,11 +548,14 @@ class MusicService :
     @Volatile
     private var cachedInstagramCookie: String = ""
     @Volatile
+    private var cachedSpotifyCookie: String = ""
+    @Volatile
     private var cachedInstagramUserAgent: String = InstagramAudioProvider.DEFAULT_USER_AGENT
 
     private var discordRpc: DiscordRPC? = null
     private var lastPlaybackSpeed = 1.0f
     private var discordUpdateJob: kotlinx.coroutines.Job? = null
+    private val discordUpdateGeneration = AtomicLong(0L)
 
     @Volatile
     private var latestMediaNotification: Notification? = null
@@ -542,9 +590,30 @@ class MusicService :
         val tempFilePath: String? = null,
     )
 
+    private data class DiscordPresenceArtwork(
+        val imageUrl: String?,
+        val fallbackUrl: String?,
+    )
+
+    private data class CachedDiscordAnimatedCover(
+        val animatedUrl: String?,
+        val expiresAtMs: Long,
+    )
+
     // URL cache for stream URLs - class-level so it can be invalidated on errors
     private val songUrlCache = HashMap<String, CachedSongStream>()
     private val audioFormatRetryJobs = ConcurrentHashMap<String, Job>()
+    private val discordAnimatedCoverCache = ConcurrentHashMap<String, CachedDiscordAnimatedCover>()
+    private val discordAnimatedCoverRetryJobs = ConcurrentHashMap<String, Job>()
+    private val discordAnimatedCoverRetryCounts = ConcurrentHashMap<String, Int>()
+    private val appleCanvasPrefetchMediaIds = ConcurrentHashMap.newKeySet<String>()
+    private val discordAnimatedCoverClient by lazy {
+        OkHttpClient
+            .Builder()
+            .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+    }
 
     // Flag to bypass cache when quality changes - forces fresh stream fetch
     private val bypassCacheForQualityChange = mutableSetOf<String>()
@@ -633,6 +702,7 @@ class MusicService :
 
         seedLoudnessCacheFromPrefs()
         cachedInstagramCookie = dataStore.get(InstagramCookieKey, "")
+        cachedSpotifyCookie = dataStore.get(SpotifyCookieKey, "")
         cachedInstagramUserAgent =
             dataStore.get(InstagramUserAgentKey, InstagramAudioProvider.DEFAULT_USER_AGENT)
                 .takeIf { it.isNotBlank() }
@@ -760,6 +830,10 @@ class MusicService :
             .distinctUntilChanged()
             .collectLatest(scope) { cachedInstagramCookie = it }
         dataStore.data
+            .map { it[SpotifyCookieKey] ?: "" }
+            .distinctUntilChanged()
+            .collectLatest(scope) { cachedSpotifyCookie = it }
+        dataStore.data
             .map { prefs ->
                 prefs[InstagramUserAgentKey]
                     ?.takeIf { it.isNotBlank() }
@@ -775,17 +849,15 @@ class MusicService :
         // Collecting this flow activates the internal map that updates lyricsProviders in LyricsHelper
         lyricsHelper.preferred.collectLatest(scope) {}
 
-        combine(
-            currentMediaMetadata.distinctUntilChangedBy { it?.id },
-            dataStore.data
-                .map { it[TidalArtworkFallbackEnabledKey] ?: false }
-                .distinctUntilChanged(),
-        ) { metadata, tidalArtworkFallbackEnabled ->
-            metadata to tidalArtworkFallbackEnabled
-        }.collectLatest(scope) { (metadata, tidalArtworkFallbackEnabled) ->
+        currentMediaMetadata
+            .distinctUntilChangedBy { it?.id }
+            .collectLatest(scope) { metadata ->
+                preloadUpcomingAppleCanvases()
                 markAppleWrapperFormat(metadata)
-                updateAppleCanvas(metadata)
-                updateTidalArtwork(metadata, tidalArtworkFallbackEnabled)
+                coroutineScope {
+                    launch { updateAppleCanvas(metadata) }
+                    launch { updatePreferredArtwork(metadata) }
+                }
             }
 
         // 4. Watch for EQ profile changes
@@ -1033,6 +1105,7 @@ class MusicService :
             .map {
                 listOf(
                     it[DiscordUseDetailsKey],
+                    it[DiscordAnimatedCoversKey],
                     it[DiscordAdvancedModeKey],
                     it[DiscordStatusKey],
                     it[DiscordButton1TextKey],
@@ -1107,6 +1180,10 @@ class MusicService :
                     crossfadeGapless = prefs[CrossfadeGaplessKey] ?: true,
                     metroMixEnabled = prefs[MetroMixEnabledKey] ?: false,
                     metroMixPreset = prefs[MetroMixPresetKey].toEnum(defaultValue = MetroMixPreset.AUTO),
+                    metroMixBars = prefs[MetroMixBarsKey] ?: 8,
+                    metroMixVolumeCurve = prefs[MetroMixVolumeCurveKey].toEnum(defaultValue = MetroMixVolumeCurve.AUTO),
+                    metroMixEqCurve = prefs[MetroMixEqCurveKey].toEnum(defaultValue = MetroMixEqCurve.AUTO),
+                    metroMixEffectCurve = prefs[MetroMixEffectCurveKey].toEnum(defaultValue = MetroMixEffectCurve.AUTO),
                 )
             },
             listenTogetherManager.roomState,
@@ -1118,6 +1195,10 @@ class MusicService :
                 crossfadeGapless = if (prefs.metroMixEnabled) false else prefs.crossfadeGapless,
                 metroMixEnabled = prefs.metroMixEnabled && roomState == null,
                 metroMixPreset = prefs.metroMixPreset,
+                metroMixBars = prefs.metroMixBars,
+                metroMixVolumeCurve = prefs.metroMixVolumeCurve,
+                metroMixEqCurve = prefs.metroMixEqCurve,
+                metroMixEffectCurve = prefs.metroMixEffectCurve,
             )
         }.distinctUntilChanged()
             .collect(scope) { prefs ->
@@ -1125,6 +1206,10 @@ class MusicService :
                 crossfadeDuration = prefs.crossfadeDuration * 1000f // Convert to ms
                 crossfadeGapless = prefs.crossfadeGapless
                 activeMetroMixPreset = prefs.metroMixPreset.takeIf { prefs.metroMixEnabled }
+                activeMetroMixBars = prefs.metroMixBars.coerceIn(2, 32)
+                activeMetroMixVolumeCurve = prefs.metroMixVolumeCurve
+                activeMetroMixEqCurve = prefs.metroMixEqCurve
+                activeMetroMixEffectCurve = prefs.metroMixEffectCurve
                 scheduleCrossfade()
             }
 
@@ -2637,6 +2722,7 @@ class MusicService :
             )
         ) {
             currentMediaMetadata.value = player.currentMetadata
+            preloadUpcomingAppleCanvases()
         }
         if (events.containsAny(
                 Player.EVENT_TRACKS_CHANGED,
@@ -3210,6 +3296,14 @@ class MusicService :
             }
     }
 
+    private fun showPlaybackToast(message: String) {
+        Handler(Looper.getMainLooper()).post {
+            Toast
+                .makeText(this@MusicService, message, Toast.LENGTH_LONG)
+                .show()
+        }
+    }
+
     /**
      * Checks if a song has exceeded the retry limit.
      */
@@ -3725,6 +3819,7 @@ class MusicService :
         showFeedback: Boolean = false,
     ) {
         val useDetails = dataStore.get(DiscordUseDetailsKey, false)
+        val useAnimatedCovers = dataStore.get(DiscordAnimatedCoversKey, false)
         val advancedMode = dataStore.get(DiscordAdvancedModeKey, false)
 
         val status = if (advancedMode) dataStore.get(DiscordStatusKey, "online") else "online"
@@ -3734,37 +3829,210 @@ class MusicService :
         val b2Visible = if (advancedMode) dataStore.get(DiscordButton2VisibleKey, true) else true
         val activityType = if (advancedMode) dataStore.get(DiscordActivityTypeKey, "listening") else "listening"
         val activityName = if (advancedMode) dataStore.get(DiscordActivityNameKey, "") else ""
+        val mediaId = song.song.id
+        val updateGeneration = discordUpdateGeneration.incrementAndGet()
 
         discordUpdateJob?.cancel()
         discordUpdateJob =
             scope.launch {
-                discordRpc
-                    ?.updateSong(
-                        song,
-                        player.currentPosition,
-                        player.playbackParameters.speed,
-                        useDetails,
-                        status,
-                        b1Text,
-                        b1Visible,
-                        b2Text,
-                        b2Visible,
-                        activityType,
-                        activityName,
-                    )?.onFailure {
-                        // Rate limited or error
-                        if (showFeedback) {
-                            Handler(Looper.getMainLooper()).post {
-                                Toast
-                                    .makeText(
-                                        this@MusicService,
-                                        "Discord RPC update failed: ${it.message}",
-                                        Toast.LENGTH_SHORT,
-                                    ).show()
+                val staticArtwork = discordStaticPresenceArtwork(song)
+                if (discordUpdateGeneration.get() != updateGeneration || currentSong.value?.song?.id != mediaId) {
+                    return@launch
+                }
+
+                suspend fun sendPresence(
+                    artwork: DiscordPresenceArtwork,
+                    showFailureToast: Boolean,
+                ) {
+                    discordRpc
+                        ?.updateSong(
+                            song,
+                            player.currentPosition,
+                            player.playbackParameters.speed,
+                            useDetails,
+                            status,
+                            b1Text,
+                            b1Visible,
+                            b2Text,
+                            b2Visible,
+                            activityType,
+                            activityName,
+                            artwork.imageUrl,
+                            artwork.fallbackUrl,
+                        )?.onFailure {
+                            if (showFailureToast) {
+                                Handler(Looper.getMainLooper()).post {
+                                    Toast
+                                        .makeText(
+                                            this@MusicService,
+                                            "Discord RPC update failed: ${it.message}",
+                                            Toast.LENGTH_SHORT,
+                                        ).show()
+                                }
                             }
                         }
-                    }
+                }
+
+                sendPresence(staticArtwork, showFeedback)
+                if (!useAnimatedCovers) return@launch
+
+                val animatedArtwork = resolveDiscordPresenceArtwork(
+                    song = song,
+                    useAnimatedCovers = true,
+                    staticArtwork = staticArtwork,
+                )
+                if (discordUpdateGeneration.get() != updateGeneration || currentSong.value?.song?.id != mediaId) {
+                    return@launch
+                }
+                if (animatedArtwork != staticArtwork) {
+                    sendPresence(animatedArtwork, showFailureToast = false)
+                }
             }
+    }
+
+    private fun discordStaticPresenceArtwork(song: Song): DiscordPresenceArtwork {
+        val staticUrl =
+            currentPreferredArtworkUrl.value
+                .takeIf { currentMediaMetadata.value?.id == song.song.id }
+                ?.takeIf { !it.isNullOrBlank() }
+                ?: song.song.thumbnailUrl
+        return DiscordPresenceArtwork(staticUrl, staticUrl)
+    }
+
+    private suspend fun resolveDiscordPresenceArtwork(
+        song: Song,
+        useAnimatedCovers: Boolean,
+        staticArtwork: DiscordPresenceArtwork = discordStaticPresenceArtwork(song),
+    ): DiscordPresenceArtwork {
+        val staticUrl = staticArtwork.imageUrl ?: song.song.thumbnailUrl
+        if (!useAnimatedCovers || song.song.isLocal || song.song.isEpisode || song.song.isVideo) {
+            return staticArtwork
+        }
+
+        val mediaId = song.song.id
+        val now = System.currentTimeMillis()
+        val artist = song.orderedArtists.firstOrNull()?.name?.takeIf { it.isNotBlank() }
+            ?: return DiscordPresenceArtwork(staticUrl, staticUrl)
+        val album = song.album?.title ?: song.song.albumName
+        val currentCanvas =
+            currentAppleCanvasUrl.value
+                .takeIf { currentMediaMetadata.value?.id == mediaId }
+                ?.takeIf { !it.isNullOrBlank() }
+        val cachedCanvas =
+            currentCanvas
+                ?: AppleMusicCanvasProvider
+                    .getCached(
+                        song = song.song.title,
+                        artist = artist,
+                        album = album,
+                        explicit = song.song.explicit.takeIf { it },
+                    )?.animated
+                    ?.takeIf { it.isNotBlank() }
+        val resolvedCanvas =
+            cachedCanvas
+                ?: withTimeoutOrNull(6_500L) {
+                    AppleMusicCanvasProvider
+                        .getBySongArtist(
+                            song = song.song.title,
+                            artist = artist,
+                            album = album,
+                            explicit = song.song.explicit.takeIf { it },
+                        )?.animated
+                        ?.takeIf { it.isNotBlank() }
+                }
+
+        val cacheKey = "$mediaId::${resolvedCanvas?.hashCode() ?: "none"}"
+        discordAnimatedCoverCache[cacheKey]
+            ?.takeIf { it.expiresAtMs > now }
+            ?.let { cached ->
+                return DiscordPresenceArtwork(
+                    imageUrl = cached.animatedUrl ?: staticUrl,
+                    fallbackUrl = if (cached.animatedUrl == null) staticUrl else null,
+                )
+            }
+
+        val animatedUrl =
+            when {
+                resolvedCanvas == null -> null
+                resolvedCanvas.isDiscordAnimatedPresenceImage() -> resolvedCanvas
+                resolvedCanvas.isAppleHlsCanvasUrl() -> prepareDiscordAnimatedCover(resolvedCanvas, pollAttempts = 1)
+                else -> null
+            }
+        val expiresInMs =
+            when {
+                animatedUrl != null -> 1000L * 60 * 60 * 24
+                resolvedCanvas != null -> 1000L * 4
+                else -> 1000L * 60
+            }
+        discordAnimatedCoverCache.keys
+            .filter { it.startsWith("$mediaId::") && it != cacheKey }
+            .forEach(discordAnimatedCoverCache::remove)
+        discordAnimatedCoverCache[cacheKey] = CachedDiscordAnimatedCover(
+            animatedUrl = animatedUrl,
+            expiresAtMs = now + expiresInMs,
+        )
+        if (animatedUrl != null) {
+            discordAnimatedCoverRetryCounts.remove(mediaId)
+            discordAnimatedCoverRetryJobs.remove(mediaId)?.cancel()
+        } else if (resolvedCanvas != null) {
+            scheduleDiscordAnimatedCoverRetry(song, mediaId)
+        }
+
+        return DiscordPresenceArtwork(
+            imageUrl = animatedUrl ?: staticUrl,
+            fallbackUrl = if (animatedUrl == null) staticUrl else null,
+        )
+    }
+
+    private fun scheduleDiscordAnimatedCoverRetry(
+        song: Song,
+        mediaId: String,
+    ) {
+        if (discordAnimatedCoverRetryJobs[mediaId]?.isActive == true) return
+
+        val attempt = (discordAnimatedCoverRetryCounts[mediaId] ?: 0) + 1
+        if (attempt > 4) return
+        discordAnimatedCoverRetryCounts[mediaId] = attempt
+
+        discordAnimatedCoverRetryJobs[mediaId] =
+            scope.launch {
+                delay(5_000L * attempt)
+                discordAnimatedCoverRetryJobs.remove(mediaId)
+                if (currentSong.value?.song?.id != mediaId) return@launch
+                if (!dataStore.get(EnableDiscordRPCKey, true) || !dataStore.get(DiscordAnimatedCoversKey, false)) {
+                    return@launch
+                }
+                discordAnimatedCoverCache.keys
+                    .filter { it.startsWith("$mediaId::") }
+                    .forEach(discordAnimatedCoverCache::remove)
+                updateDiscordRPC(song)
+            }
+    }
+
+    private suspend fun prepareDiscordAnimatedCover(
+        canvasUrl: String,
+        pollAttempts: Int = 2,
+    ): String? {
+        val resolverUrl = dataStore.get(DeezerResolverUrlKey, DeezerAudioProvider.DEFAULT_RESOLVER_URL)
+        return DiscordCanvasServerConverter.prepare(
+            canvasUrl = canvasUrl,
+            resolverUrl = resolverUrl,
+            client = discordAnimatedCoverClient,
+            pollAttempts = pollAttempts,
+        )
+    }
+
+    private fun String.isAppleHlsCanvasUrl(): Boolean {
+        val parsed = toHttpUrlOrNull() ?: return false
+        val host = parsed.host
+        return parsed.scheme == "https" &&
+            parsed.encodedPath.endsWith(".m3u8", ignoreCase = true) &&
+            (host == "mvod.itunes.apple.com" || host.endsWith(".mvod.itunes.apple.com"))
+    }
+
+    private fun String.isDiscordAnimatedPresenceImage(): Boolean {
+        val path = toHttpUrlOrNull()?.encodedPath?.lowercase(Locale.US) ?: return false
+        return path.endsWith(".gif") || path.endsWith(".webp") || path.endsWith(".avif")
     }
 
     private fun upsertAppleWrapperFormat(mediaId: String) {
@@ -3800,6 +4068,8 @@ class MusicService :
         val preferInstagramAudio = dataStore.get(PreferInstagramAudioKey, false)
         val preferYouTubeMusicAudio = dataStore.get(PreferYouTubeMusicAudioKey, false)
         val stopOnProviderError = dataStore.get(StopOnProviderErrorKey, false)
+        val audioProviderOrder = AudioProviderOrder.deserialize(dataStore.get(AudioProviderOrderKey, ""))
+        val providerMatchOverrides = dataStore.get(AudioProviderMatchOverridesKey, "")
         val instagramCookie = dataStore.get(InstagramCookieKey, "")
         val instagramUserAgent = dataStore.get(InstagramUserAgentKey, InstagramAudioProvider.DEFAULT_USER_AGENT)
             .takeIf { it.isNotBlank() }
@@ -3828,6 +4098,8 @@ class MusicService :
             "preferInstagram=$preferInstagramAudio",
             "preferYouTube=$preferYouTubeMusicAudio",
             "stopOnProviderError=$stopOnProviderError",
+            "providerOrder=${audioProviderOrder.joinToString(",") { it.name }}",
+            "providerOverrides=${providerMatchOverrides.hashCode()}",
             "instagramAuth=$instagramCookieConfigured",
             "instagramCookie=${instagramCookie.hashCode()}",
             "instagramUserAgent=${instagramUserAgent.hashCode()}",
@@ -4031,6 +4303,51 @@ class MusicService :
         downloadCache.removeResource(youtubeFallbackCacheKey(mediaId))
     }
 
+    fun setProviderMatchOverride(
+        mediaId: String,
+        provider: AudioProviderOrderItem?,
+        providerTrackId: String?,
+        label: String?,
+    ) {
+        if (mediaId.isBlank()) return
+        scope.launch(Dispatchers.IO) {
+            dataStore.edit { preferences ->
+                val overrides = ProviderMatchOverrides.decode(preferences[AudioProviderMatchOverridesKey])
+                if (provider == null || providerTrackId.isNullOrBlank()) {
+                    overrides.remove(mediaId)
+                } else {
+                    overrides[mediaId] = ProviderMatchOverride(
+                        provider = provider,
+                        providerTrackId = providerTrackId,
+                        label = label?.takeIf { it.isNotBlank() } ?: providerTrackId,
+                    )
+                }
+                preferences[AudioProviderMatchOverridesKey] = ProviderMatchOverrides.encode(overrides)
+            }
+            withContext(Dispatchers.Main) {
+                clearResolvedStreamCache(mediaId)
+                AppleMusicSongResolver.invalidate(mediaId)
+                QobuzAudioProvider.invalidate(mediaId)
+                TidalAudioProvider.invalidate(mediaId)
+                DeezerAudioProvider.invalidate(mediaId)
+                SoundCloudAudioProvider.invalidate(mediaId)
+                InstagramAudioProvider.invalidate(mediaId)
+                YouTubeAudioProvider.invalidate(mediaId)
+                if (player.currentMediaItem?.mediaId == mediaId) {
+                    val currentPosition = player.currentPosition.coerceAtLeast(0L)
+                    val wasPlaying = player.playWhenReady
+                    val currentIndex = player.currentMediaItemIndex
+                    player.stop()
+                    player.seekTo(currentIndex, currentPosition)
+                    player.prepare()
+                    if (wasPlaying) {
+                        player.play()
+                    }
+                }
+            }
+        }
+    }
+
     private fun upsertCachedStreamFormat(
         mediaId: String,
         format: FormatEntity,
@@ -4118,6 +4435,8 @@ class MusicService :
         val preferInstagramAudio = dataStore.get(PreferInstagramAudioKey, false)
         val preferYouTubeMusicAudio = dataStore.get(PreferYouTubeMusicAudioKey, false)
         val stopOnProviderError = dataStore.get(StopOnProviderErrorKey, false)
+        val audioProviderOrder = AudioProviderOrder.deserialize(dataStore.get(AudioProviderOrderKey, ""))
+        val providerOverride = ProviderMatchOverrides.decode(dataStore.get(AudioProviderMatchOverridesKey, ""))[mediaId]
         val instagramCookie = dataStore.get(InstagramCookieKey, "")
         val instagramUserAgent = dataStore.get(InstagramUserAgentKey, InstagramAudioProvider.DEFAULT_USER_AGENT)
             .takeIf { it.isNotBlank() }
@@ -4193,11 +4512,7 @@ class MusicService :
         }
 
         fun showProviderWarning(message: String) {
-            Handler(Looper.getMainLooper()).post {
-                Toast
-                    .makeText(this@MusicService, message, Toast.LENGTH_LONG)
-                    .show()
-            }
+            showPlaybackToast(message)
         }
 
         var appleAttempt: Result<AppleMusicSongResolver.Resolved> =
@@ -4218,125 +4533,173 @@ class MusicService :
             Result.failure(IllegalStateException("Instagram audio not enabled"))
         var youtubeAttempt: Result<PlaybackStreamResolution> =
             Result.failure(IllegalStateException("YouTube Music not attempted yet"))
+        var qobuzAttempt: Result<QobuzAudioProvider.Resolved> =
+            Result.failure(IllegalStateException("Qobuz not attempted yet"))
+        val attemptedProviders = mutableSetOf<AudioProviderOrderItem>()
+        val orderedProviders = buildList {
+            providerOverride?.provider?.let(::add)
+            if (directSoundCloudMediaId) add(AudioProviderOrderItem.SOUNDCLOUD)
+            if (directTidalMediaId) add(AudioProviderOrderItem.TIDAL)
+            if (directDeezerMediaId) add(AudioProviderOrderItem.DEEZER)
+            addAll(audioProviderOrder)
+        }.distinct()
 
-        if (preferSoundCloudAudio || directSoundCloudMediaId) {
+        fun isForcedProvider(provider: AudioProviderOrderItem): Boolean =
+            providerOverride?.provider == provider
+
+        fun providerMediaId(provider: AudioProviderOrderItem): String =
+            if (isForcedProvider(provider)) providerOverride?.providerMediaId().orEmpty().ifBlank { mediaId } else mediaId
+
+        suspend fun attemptProvider(provider: AudioProviderOrderItem): PlaybackStreamResolution? {
+            if (provider in attemptedProviders) return null
+            when (provider) {
+                AudioProviderOrderItem.SOUNDCLOUD -> {
+                    if (!preferSoundCloudAudio && !directSoundCloudMediaId && !isForcedProvider(provider)) return null
+                    attemptedProviders += provider
+                    soundCloudAttempt = runCatching {
+                        resolveSoundCloudFallback(
+                            mediaId = mediaId,
+                            song = song,
+                            queuedMetadata = queuedMetadata,
+                            authToken = soundCloudAuthToken,
+                            queryMediaId = providerMediaId(provider),
+                        )
+                    }
+                    soundCloudAttempt.getOrNull()?.let { return it }
+                    if (stopOnProviderError) {
+                        throwProviderFailure("SoundCloud", soundCloudAttempt.exceptionOrNull())
+                    }
+                }
+                AudioProviderOrderItem.TIDAL -> {
+                    if (!preferTidalAudio && !directTidalMediaId && !isForcedProvider(provider)) return null
+                    attemptedProviders += provider
+                    tidalAttempt = runCatching {
+                        TidalAudioProvider.resolve(
+                            query = buildTidalQuery(providerMediaId(provider), song, queuedMetadata),
+                            cacheDir = cacheDir,
+                            preferAtmos = false,
+                            preferLiveDash = false,
+                            audioQuality = tidalQuality,
+                        )
+                    }
+                    tidalAttempt.getOrNull()?.let { resolved ->
+                        Timber.tag("MusicService").i("Using TIDAL stream for $mediaId: ${resolved.label}")
+                        resolved.losslessDowngradedBitrateKbps?.let { bitrateKbps ->
+                            showProviderWarning(getString(R.string.tidal_lossless_downgraded_to_aac, bitrateKbps))
+                        }
+                        return resolved.toPlaybackResolution()
+                    }
+                    if (stopOnProviderError) {
+                        throwProviderFailure("TIDAL", tidalAttempt.exceptionOrNull())
+                    }
+                }
+                AudioProviderOrderItem.DEEZER -> {
+                    if (!preferDeezerAudio && !directDeezerMediaId && !isForcedProvider(provider)) return null
+                    attemptedProviders += provider
+                    deezerAttempt = runCatching {
+                        DeezerAudioProvider.resolve(
+                            buildDeezerQuery(
+                                mediaId = providerMediaId(provider),
+                                song = song,
+                                metadataOverride = queuedMetadata,
+                                resolverUrl = deezerResolverUrl,
+                                quality = deezerQuality,
+                            ),
+                        )
+                    }
+                    deezerAttempt.getOrNull()?.let { resolved ->
+                        Timber.tag("MusicService").i("Using Deezer stream for $mediaId: ${resolved.label}")
+                        return resolved.toPlaybackResolution()
+                    }
+                    if (stopOnProviderError) {
+                        throwProviderFailure("Deezer", deezerAttempt.exceptionOrNull())
+                    }
+                }
+                AudioProviderOrderItem.INSTAGRAM -> {
+                    if (!preferInstagramAudio) return null
+                    attemptedProviders += provider
+                    instagramAttempt = runCatching {
+                        InstagramAudioProvider.resolve(
+                            buildInstagramQuery(mediaId, song, queuedMetadata),
+                            instagramCookie,
+                            instagramUuid,
+                            instagramUserAgent,
+                            instagramAppId,
+                        )
+                    }
+                    instagramAttempt.getOrNull()?.let { resolved ->
+                        Timber.tag("MusicService").i("Using Instagram audio stream for $mediaId: ${resolved.title}")
+                        return resolved.toPlaybackResolution()
+                    }
+                    if (stopOnProviderError) {
+                        throwProviderFailure("Instagram", instagramAttempt.exceptionOrNull())
+                    }
+                }
+                AudioProviderOrderItem.YOUTUBE_MUSIC -> {
+                    if (!preferYouTubeMusicAudio && !isForcedProvider(provider)) return null
+                    attemptedProviders += provider
+                    youtubeAttempt = runCatching {
+                        resolveYouTubeFallback(
+                            mediaId = providerMediaId(provider),
+                            cacheMediaId = mediaId,
+                        )
+                    }
+                    youtubeAttempt.getOrNull()?.let { resolved ->
+                        Timber.tag("MusicService").i("Using YouTube Music stream for $mediaId")
+                        return resolved
+                    }
+                    if (stopOnProviderError) {
+                        throwProviderFailure("YouTube Music", youtubeAttempt.exceptionOrNull())
+                    }
+                }
+                AudioProviderOrderItem.QOBUZ -> {
+                    attemptedProviders += provider
+                    qobuzAttempt = runCatching {
+                        QobuzAudioProvider.resolve(buildQobuzQuery(providerMediaId(provider), song, queuedMetadata))
+                    }
+                    qobuzAttempt.getOrNull()?.let { resolved ->
+                        Timber.tag("MusicService").i("Using Qobuz stream for $mediaId: ${resolved.label}")
+                        return resolved.toPlaybackResolution()
+                    }
+                    if (stopOnProviderError) {
+                        throwProviderFailure("Qobuz", qobuzAttempt.exceptionOrNull())
+                    }
+                }
+                AudioProviderOrderItem.APPLE_MUSIC -> {
+                    if ((!appleMusicFallbackEnabled && !isForcedProvider(provider)) || skipAppleForThisAttempt) return null
+                    attemptedProviders += provider
+                    appleAttempt = runCatching {
+                        AppleMusicSongResolver.resolve(buildAppleMusicQuery(providerMediaId(provider), song, queuedMetadata))
+                    }
+                    appleAttempt.getOrNull()?.let { resolved ->
+                        Timber.tag("MusicService").i("Using Apple Music stream for $mediaId")
+                        return resolved.toPlaybackResolution()
+                    }
+                    if (stopOnProviderError) {
+                        throwProviderFailure("Apple Music", appleAttempt.exceptionOrNull())
+                    }
+                }
+            }
+            return null
+        }
+
+        for (provider in orderedProviders) {
+            attemptProvider(provider)?.let { return it }
+        }
+
+        if (!attemptedProviders.contains(AudioProviderOrderItem.SOUNDCLOUD) && !directSoundCloudMediaId) {
             soundCloudAttempt = runCatching {
                 resolveSoundCloudFallback(mediaId, song, queuedMetadata, soundCloudAuthToken)
             }
             soundCloudAttempt.getOrNull()?.let { return it }
-            if (stopOnProviderError) {
-                throwProviderFailure("SoundCloud", soundCloudAttempt.exceptionOrNull())
-            }
         }
 
-        if (preferTidalAudio || directTidalMediaId) {
-            tidalAttempt = runCatching {
-                TidalAudioProvider.resolve(
-                    query = buildTidalQuery(mediaId, song, queuedMetadata),
-                    cacheDir = cacheDir,
-                    preferAtmos = false,
-                    preferLiveDash = false,
-                    audioQuality = tidalQuality,
-                )
-            }
-            tidalAttempt.getOrNull()?.let { resolved ->
-                Timber.tag("MusicService").i("Using preferred TIDAL stream for $mediaId: ${resolved.label}")
-                resolved.losslessDowngradedBitrateKbps?.let { bitrateKbps ->
-                    showProviderWarning(getString(R.string.tidal_lossless_downgraded_to_aac, bitrateKbps))
-                }
-                return resolved.toPlaybackResolution()
-            }
-            if (stopOnProviderError) {
-                throwProviderFailure("TIDAL", tidalAttempt.exceptionOrNull())
-            }
-        }
-
-        if (preferDeezerAudio || directDeezerMediaId) {
-            deezerAttempt = runCatching {
-                DeezerAudioProvider.resolve(
-                    buildDeezerQuery(
-                        mediaId = mediaId,
-                        song = song,
-                        metadataOverride = queuedMetadata,
-                        resolverUrl = deezerResolverUrl,
-                        quality = deezerQuality,
-                    ),
-                )
-            }
-            deezerAttempt.getOrNull()?.let { resolved ->
-                Timber.tag("MusicService").i("Using preferred Deezer stream for $mediaId: ${resolved.label}")
-                return resolved.toPlaybackResolution()
-            }
-            if (stopOnProviderError) {
-                throwProviderFailure("Deezer", deezerAttempt.exceptionOrNull())
-            }
-        }
-
-        if (preferInstagramAudio) {
-            instagramAttempt = runCatching {
-                InstagramAudioProvider.resolve(
-                    buildInstagramQuery(mediaId, song, queuedMetadata),
-                    instagramCookie,
-                    instagramUuid,
-                    instagramUserAgent,
-                    instagramAppId,
-                )
-            }
-            instagramAttempt.getOrNull()?.let { resolved ->
-                Timber.tag("MusicService").i("Using preferred Instagram audio stream for $mediaId: ${resolved.title}")
-                return resolved.toPlaybackResolution()
-            }
-            if (stopOnProviderError) {
-                throwProviderFailure("Instagram", instagramAttempt.exceptionOrNull())
-            }
-        }
-
-        if (preferYouTubeMusicAudio) {
+        if (!attemptedProviders.contains(AudioProviderOrderItem.YOUTUBE_MUSIC)) {
             youtubeAttempt = runCatching {
                 resolveYouTubeFallback(mediaId)
             }
-            youtubeAttempt.getOrNull()?.let { resolved ->
-                Timber.tag("MusicService").i("Using preferred YouTube Music stream for $mediaId")
-                return resolved
-            }
-            if (stopOnProviderError) {
-                throwProviderFailure("YouTube Music", youtubeAttempt.exceptionOrNull())
-            }
         }
-
-        if (preferAppleMusic && !skipAppleForThisAttempt) {
-            appleAttempt = runCatching {
-                AppleMusicSongResolver.resolve(buildAppleMusicQuery(mediaId, song, queuedMetadata))
-            }
-            appleAttempt.getOrNull()?.let { resolved ->
-                Timber.tag("MusicService").i("Using preferred Apple Music stream for $mediaId")
-                return resolved.toPlaybackResolution()
-            }
-            if (stopOnProviderError) {
-                throwProviderFailure("Apple Music", appleAttempt.exceptionOrNull())
-            }
-        }
-
-        val qobuzAttempt = runCatching {
-            QobuzAudioProvider.resolve(buildQobuzQuery(mediaId, song, queuedMetadata))
-        }
-        qobuzAttempt.getOrNull()?.let { resolved ->
-            Timber.tag("MusicService").i("Using primary Qobuz stream for $mediaId: ${resolved.label}")
-            return resolved.toPlaybackResolution()
-        }
-        if (stopOnProviderError) {
-            throwProviderFailure("Qobuz", qobuzAttempt.exceptionOrNull())
-        }
-
-        if (appleMusicFallbackEnabled && !preferAppleMusic && !skipAppleForThisAttempt) {
-            appleAttempt = runCatching {
-                AppleMusicSongResolver.resolve(buildAppleMusicQuery(mediaId, song, queuedMetadata))
-            }
-            appleAttempt.getOrNull()?.let { resolved ->
-                Timber.tag("MusicService").i("Qobuz primary stream missed for $mediaId; using Apple Music fallback")
-                return resolved.toPlaybackResolution()
-            }
-        }
+        youtubeAttempt.getOrNull()?.let { return it }
 
         val appleError = appleAttempt.exceptionOrNull()
             ?: IllegalStateException("Apple Music failed")
@@ -4347,20 +4710,6 @@ class MusicService :
                 PlaybackException.ERROR_CODE_REMOTE_ERROR,
             )
         }
-
-        if (!preferSoundCloudAudio && !directSoundCloudMediaId) {
-            soundCloudAttempt = runCatching {
-                resolveSoundCloudFallback(mediaId, song, queuedMetadata, soundCloudAuthToken)
-            }
-            soundCloudAttempt.getOrNull()?.let { return it }
-        }
-
-        if (!preferYouTubeMusicAudio) {
-            youtubeAttempt = runCatching {
-                resolveYouTubeFallback(mediaId)
-            }
-        }
-        youtubeAttempt.getOrNull()?.let { return it }
 
         val youtubeError = youtubeAttempt.exceptionOrNull()
             ?: IllegalStateException("YouTube fallback failed")
@@ -4402,8 +4751,9 @@ class MusicService :
         song: Song?,
         queuedMetadata: com.metrolist.music.models.MediaMetadata? = null,
         authToken: String = "",
+        queryMediaId: String = mediaId,
     ): PlaybackStreamResolution {
-        val resolved = SoundCloudAudioProvider.resolve(buildSoundCloudQuery(mediaId, song, queuedMetadata), authToken)
+        val resolved = SoundCloudAudioProvider.resolve(buildSoundCloudQuery(queryMediaId, song, queuedMetadata), authToken)
         Timber.tag("MusicService").i(
             "Using SoundCloud fallback for $mediaId: ${resolved.title} by ${resolved.artist}, bitrate=${resolved.bitrate}",
         )
@@ -4416,7 +4766,10 @@ class MusicService :
         )
     }
 
-    private suspend fun resolveYouTubeFallback(mediaId: String): PlaybackStreamResolution {
+    private suspend fun resolveYouTubeFallback(
+        mediaId: String,
+        cacheMediaId: String = mediaId,
+    ): PlaybackStreamResolution {
         val resolved = YouTubeAudioProvider.resolve(mediaId)
         Timber.tag("MusicService").i(
             "Using YouTube AAC fallback for $mediaId: itag=${resolved.itag}, bitrate=${resolved.bitrate}",
@@ -4424,8 +4777,8 @@ class MusicService :
         return PlaybackStreamResolution(
             uri = resolved.mediaUri,
             expiresAtMs = resolved.expiresAtMs,
-            cacheKey = youtubeFallbackCacheKey(mediaId),
-            format = youtubeFallbackFormat(mediaId, resolved),
+            cacheKey = youtubeFallbackCacheKey(cacheMediaId),
+            format = youtubeFallbackFormat(cacheMediaId, resolved),
             mimeType = resolved.mimeType,
         )
     }
@@ -4454,8 +4807,7 @@ class MusicService :
             title = title,
             artists = artists,
             album = album,
-            isrc = TidalAudioProvider.normalizeIsrc(mediaId)
-                ?: TidalAudioProvider.normalizeIsrc(queuedMetadata?.id),
+            isrc = ProviderIsrc.firstOf(mediaId, song?.song?.id, queuedMetadata?.id),
             durationMs = durationMs,
         )
     }
@@ -4490,7 +4842,7 @@ class MusicService :
             title = title,
             artists = artists,
             album = album,
-            isrc = null,
+            isrc = ProviderIsrc.firstOf(mediaId, song?.song?.id, queuedMetadata?.id),
             durationMs = durationMs,
             countryCode = country,
             backend = backend.toQobuzProviderBackend(),
@@ -4523,7 +4875,7 @@ class MusicService :
             title = title,
             artists = artists,
             album = album,
-            isrc = null,
+            isrc = ProviderIsrc.firstOf(mediaId, song?.song?.id, queuedMetadata?.id),
             durationMs = durationMs,
             resolverUrl = resolverUrl,
             quality = quality,
@@ -4583,8 +4935,7 @@ class MusicService :
             artists = artists,
             album = album,
             durationMs = durationMs,
-            isrc = InstagramAudioProvider.normalizeIsrc(mediaId)
-                ?: InstagramAudioProvider.normalizeIsrc(queuedMetadata?.id),
+            isrc = ProviderIsrc.firstOf(mediaId, song?.song?.id, queuedMetadata?.id),
         )
     }
 
@@ -4602,52 +4953,187 @@ class MusicService :
     }
 
     private suspend fun updateAppleCanvas(metadata: com.metrolist.music.models.MediaMetadata?) {
-        currentAppleCanvasUrl.value = null
         currentEmbeddedCanvasUrl.value = null
-        if (metadata == null || metadata.isEpisode || metadata.isVideoSong) return
+        if (metadata == null || metadata.isEpisode || metadata.isVideoSong) {
+            currentAppleCanvasUrl.value = null
+            currentAppleTallCanvasUrl.value = null
+            return
+        }
 
         if (isLocalMedia(metadata)) {
+            currentAppleCanvasUrl.value = null
+            currentAppleTallCanvasUrl.value = null
             loadEmbeddedCanvasInBackground(metadata.id)
             return
         }
 
-        val artist = metadata.artists.firstOrNull()?.name?.takeIf { it.isNotBlank() } ?: return
+        val artist =
+            metadata.artists.firstOrNull()?.name?.takeIf { it.isNotBlank() }
+                ?: run {
+                    currentAppleCanvasUrl.value = null
+                    currentAppleTallCanvasUrl.value = null
+                    return
+                }
         val album = metadata.album?.title
         val cached = AppleMusicCanvasProvider.getCached(
             song = metadata.title,
             artist = artist,
             album = album,
+            explicit = metadata.explicit.takeIf { it },
+        )?.animated?.takeIf { it.isNotBlank() }
+        val cachedTall = AppleMusicCanvasProvider.getCached(
+            song = metadata.title,
+            artist = artist,
+            album = album,
+            explicit = metadata.explicit.takeIf { it },
+            preferredAspect = AppleMusicCanvasProvider.CanvasAspectPreference.TALL,
         )?.animated?.takeIf { it.isNotBlank() }
         if (cached != null) {
             currentAppleCanvasUrl.value = cached
+        } else {
+            currentAppleCanvasUrl.value = null
+        }
+        if (cachedTall != null) {
+            currentAppleTallCanvasUrl.value = cachedTall
+        } else {
+            currentAppleTallCanvasUrl.value = null
+        }
+        if (cached != null && cachedTall != null) {
             return
         }
 
-        val resolved = withTimeoutOrNull(2_500L) {
-            AppleMusicCanvasProvider.getBySongArtist(
-                song = metadata.title,
-                artist = artist,
-                album = album,
-            )?.animated?.takeIf { it.isNotBlank() }
-        }
+        val (resolved, resolvedTall) =
+            coroutineScope {
+                val squareDeferred =
+                    if (cached == null) {
+                        async {
+                            withTimeoutOrNull(6_500L) {
+                                AppleMusicCanvasProvider.getBySongArtist(
+                                    song = metadata.title,
+                                    artist = artist,
+                                    album = album,
+                                    explicit = metadata.explicit.takeIf { it },
+                                )?.animated?.takeIf { it.isNotBlank() }
+                            }
+                        }
+                    } else {
+                        null
+                    }
+                val tallDeferred =
+                    if (cachedTall == null) {
+                        async {
+                            withTimeoutOrNull(6_500L) {
+                                AppleMusicCanvasProvider.getBySongArtist(
+                                    song = metadata.title,
+                                    artist = artist,
+                                    album = album,
+                                    explicit = metadata.explicit.takeIf { it },
+                                    preferredAspect = AppleMusicCanvasProvider.CanvasAspectPreference.TALL,
+                                )?.animated?.takeIf { it.isNotBlank() }
+                            }
+                        }
+                    } else {
+                        null
+                    }
+                (cached ?: squareDeferred?.await()) to (cachedTall ?: tallDeferred?.await())
+            }
 
         if (currentMediaMetadata.value?.id == metadata.id) {
             currentAppleCanvasUrl.value = resolved
+            currentAppleTallCanvasUrl.value = resolvedTall ?: resolved
         }
     }
 
-    private suspend fun updateTidalArtwork(
+    private fun preloadUpcomingAppleCanvases() {
+        val timeline = player.currentTimeline
+        if (timeline.isEmpty || player.mediaItemCount <= 1) return
+
+        val currentIndex = player.currentMediaItemIndex
+        if (currentIndex == C.INDEX_UNSET) return
+
+        val metadataToPrefetch = mutableListOf<com.metrolist.music.models.MediaMetadata>()
+        var nextIndex =
+            timeline.getNextWindowIndex(
+                currentIndex,
+                REPEAT_MODE_OFF,
+                player.shuffleModeEnabled,
+            )
+        while (nextIndex != C.INDEX_UNSET && metadataToPrefetch.size < APPLE_CANVAS_PREFETCH_WINDOW) {
+            player
+                .getMediaItemAt(nextIndex)
+                .metadata
+                ?.let(metadataToPrefetch::add)
+            nextIndex =
+                timeline.getNextWindowIndex(
+                    nextIndex,
+                    REPEAT_MODE_OFF,
+                    player.shuffleModeEnabled,
+                )
+        }
+
+        if (metadataToPrefetch.isEmpty()) return
+        if (appleCanvasPrefetchMediaIds.size > APPLE_CANVAS_PREFETCH_CACHE_LIMIT) {
+            appleCanvasPrefetchMediaIds.clear()
+        }
+
+        metadataToPrefetch.forEach { metadata ->
+            if (metadata.isEpisode || metadata.isVideoSong || metadata.id.isLocalMediaId()) return@forEach
+            val artist = metadata.artists.firstOrNull()?.name?.takeIf { it.isNotBlank() } ?: return@forEach
+            if (!appleCanvasPrefetchMediaIds.add(metadata.id)) return@forEach
+            scope.launch(Dispatchers.IO + SilentHandler) {
+                AppleMusicCanvasProvider.prefetchBySongArtist(
+                    song = metadata.title,
+                    artist = artist,
+                    album = metadata.album?.title,
+                    explicit = metadata.explicit.takeIf { it },
+                    preferredAspect = AppleMusicCanvasProvider.CanvasAspectPreference.TALL,
+                )
+                val canvasUrl =
+                    withTimeoutOrNull(6_500L) {
+                        AppleMusicCanvasProvider.getBySongArtist(
+                            song = metadata.title,
+                            artist = artist,
+                            album = metadata.album?.title,
+                            explicit = metadata.explicit.takeIf { it },
+                        )?.animated
+                    }?.takeIf { it.isNotBlank() }
+
+                if (canvasUrl?.isAppleHlsCanvasUrl() == true &&
+                    dataStore.get(EnableDiscordRPCKey, true) &&
+                    dataStore.get(DiscordAnimatedCoversKey, false)
+                ) {
+                    prepareDiscordAnimatedCover(canvasUrl, pollAttempts = 0)
+                }
+            }
+        }
+    }
+
+    private suspend fun updatePreferredArtwork(
         metadata: com.metrolist.music.models.MediaMetadata?,
-        enabled: Boolean,
     ) {
-        currentTidalArtworkUrl.value = null
-        if (!enabled || metadata == null || metadata.isEpisode || metadata.isVideoSong) return
+        currentPreferredArtworkUrl.value = null
+        if (metadata == null || metadata.isEpisode || metadata.isVideoSong) return
         if (isLocalMedia(metadata)) return
-        if (!currentAppleCanvasUrl.value.isNullOrBlank()) return
 
         val artist = metadata.artists.firstOrNull()?.name?.takeIf { it.isNotBlank() }
-        val resolved =
-            withTimeoutOrNull(2_500L) {
+        val cacheKey = preferredArtworkCacheKey(metadata, artist)
+        val cached =
+            synchronized(preferredArtworkCache) {
+                if (preferredArtworkCache.containsKey(cacheKey)) {
+                    true to preferredArtworkCache[cacheKey]
+                } else {
+                    false to null
+                }
+            }
+        if (cached.first) {
+            if (currentMediaMetadata.value?.id == metadata.id) {
+                currentPreferredArtworkUrl.value = cached.second
+            }
+            return
+        }
+
+        val tidalArtwork =
+            withTimeoutOrNull(2_750L) {
                 TidalHomeFeedProvider.resolveAlbumArtwork(
                     title = metadata.title,
                     artist = artist,
@@ -4655,18 +5141,44 @@ class MusicService :
                     cookie = dataStore.get(TidalCookieKey, ""),
                 )
             }?.takeIf { it.isNotBlank() }
+        val resolved =
+            tidalArtwork
+                ?: withTimeoutOrNull(2_750L) {
+                    DeezerHomeFeedProvider.resolveAlbumArtwork(
+                        title = metadata.title,
+                        artist = artist,
+                        album = metadata.album?.title,
+                        cookie = dataStore.get(DeezerCookieKey, ""),
+                    )
+                }?.takeIf { it.isNotBlank() }
 
-        if (currentMediaMetadata.value?.id == metadata.id && currentAppleCanvasUrl.value.isNullOrBlank()) {
-            currentTidalArtworkUrl.value = resolved
+        synchronized(preferredArtworkCache) {
+            preferredArtworkCache[cacheKey] = resolved
+        }
+        if (currentMediaMetadata.value?.id == metadata.id) {
+            currentPreferredArtworkUrl.value = resolved
         }
     }
 
+    private fun preferredArtworkCacheKey(
+        metadata: com.metrolist.music.models.MediaMetadata,
+        artist: String?,
+    ): String =
+        listOf(
+            metadata.title,
+            artist.orEmpty(),
+            metadata.album?.title.orEmpty(),
+        ).joinToString("|") { it.lowercase().trim() }
+
     private suspend fun isLocalMedia(metadata: com.metrolist.music.models.MediaMetadata): Boolean =
-        metadata.id.startsWith("content://", ignoreCase = true) ||
-            metadata.id.startsWith("file://", ignoreCase = true) ||
+        metadata.id.isLocalMediaId() ||
             withContext(Dispatchers.IO) {
             database.getSongByIdBlocking(metadata.id)?.song?.isLocal == true
             }
+
+    private fun String.isLocalMediaId(): Boolean =
+        startsWith("content://", ignoreCase = true) ||
+            startsWith("file://", ignoreCase = true)
 
     private fun loadEmbeddedCanvasInBackground(mediaId: String) {
         scope.launch(Dispatchers.IO) {
@@ -4676,9 +5188,11 @@ class MusicService :
                 if (currentMediaMetadata.value?.id == mediaId) {
                     if (embeddedCanvas?.provider?.contains("apple", ignoreCase = true) == true) {
                         currentAppleCanvasUrl.value = embeddedCanvas.uri
+                        currentAppleTallCanvasUrl.value = embeddedCanvas.uri
                         currentEmbeddedCanvasUrl.value = null
                     } else {
                         currentAppleCanvasUrl.value = null
+                        currentAppleTallCanvasUrl.value = null
                         currentEmbeddedCanvasUrl.value = embeddedCanvas?.uri
                     }
                 }
@@ -4711,6 +5225,7 @@ class MusicService :
             title = title,
             artists = artists,
             album = album,
+            isrc = ProviderIsrc.firstOf(mediaId, song?.song?.id, queuedMetadata?.id),
             durationMs = durationMs,
             explicit = explicit,
         )
@@ -5942,11 +6457,23 @@ class MusicService :
                 MetroMixPreset.AUTO -> inferAutoMetroMixPreset()
                 else -> selectedPreset
             }
+        val bpm = player.currentMediaItem?.metadata?.bpm
+        val bars = activeMetroMixBars.coerceIn(2, 32)
+        val barDurationMs = bpm?.takeIf { it in 40f..240f }?.let { (60_000f / it * 4f * bars).toLong() }
+        val presetDurationMs = ((runtimePreset?.durationSeconds ?: (crossfadeDuration / 1000f)) * 1000f).toLong()
         val durationMs =
-            ((runtimePreset?.durationSeconds ?: (crossfadeDuration / 1000f)) * 1000f)
-                .toLong()
-                .coerceIn(750L, 15_000L)
-        return MetroMixRuntimeProfile(runtimePreset, durationMs)
+            if (selectedPreset != null) {
+                barDurationMs ?: (presetDurationMs * (bars / 8f)).toLong()
+            } else {
+                presetDurationMs
+            }.coerceIn(750L, 32_000L)
+        return MetroMixRuntimeProfile(
+            preset = runtimePreset,
+            durationMs = durationMs,
+            volumeCurve = activeMetroMixVolumeCurve,
+            eqCurve = activeMetroMixEqCurve,
+            effectCurve = activeMetroMixEffectCurve,
+        )
     }
 
     private fun inferAutoMetroMixPreset(): MetroMixPreset {
@@ -5996,6 +6523,7 @@ class MusicService :
         pendingMetroMixProfile = null
         activeCrossfadeDurationMs = mixProfile.durationMs
         activeMetroMixRuntimePreset = mixProfile.preset
+        activeMetroMixRuntimeProfile = mixProfile
 
         // Preserve player state before creating the secondary player
         // Use runBlocking to ensure we get the correct state from DataStore
@@ -6010,6 +6538,7 @@ class MusicService :
                 player.nextMediaItemIndex
             }
         if (targetIndex == C.INDEX_UNSET) return
+        val targetMediaItem = runCatching { player.getMediaItemAt(targetIndex) }.getOrNull()
 
         secondaryPlayer = createExoPlayer(publishToUi = false)
         val secPlayer = secondaryPlayer!!
@@ -6023,7 +6552,7 @@ class MusicService :
                     secPlayer.removeListener(this)
                     crossfadePrepareJob?.cancel()
                     crossfadePrepareJob = null
-                    performCrossfadeSwap()
+                    performCrossfadeSwap(targetIndex, targetMediaItem)
                     if (savedShuffleEnabled) {
                         val shufflePlaylistFirst = dataStore.get(ShufflePlaylistFirstKey, false)
                         applyShuffleOrder(player.currentMediaItemIndex, player.mediaItemCount, shufflePlaylistFirst)
@@ -6071,6 +6600,7 @@ class MusicService :
     private fun crossfadeVolumePair(
         progress: Float,
         preset: MetroMixPreset?,
+        profile: MetroMixRuntimeProfile? = null,
     ): Pair<Float, Float> {
         val p = progress.coerceIn(0f, 1f)
         fun smooth(value: Float) = value * value * (3f - 2f * value)
@@ -6085,8 +6615,20 @@ class MusicService :
         }
         fun pair(fadeIn: Float, fadeOut: Float, headroom: Float = 1f): Pair<Float, Float> =
             (fadeIn.coerceIn(0f, 1f) * headroom) to (fadeOut.coerceIn(0f, 1f) * headroom)
+        val effectivePreset =
+            when {
+                profile?.effectCurve == MetroMixEffectCurve.ECHO -> MetroMixPreset.ECHO_OUT
+                profile?.effectCurve == MetroMixEffectCurve.WAVE -> MetroMixPreset.BEAT_BLEND
+                profile?.eqCurve == MetroMixEqCurve.BASS_SWAP -> MetroMixPreset.BASS_SWAP
+                profile?.eqCurve == MetroMixEqCurve.VOCAL_SPACE -> MetroMixPreset.VOCAL_BLEND
+                profile?.volumeCurve == MetroMixVolumeCurve.PUNCHY -> MetroMixPreset.ENERGY_MATCH
+                profile?.volumeCurve == MetroMixVolumeCurve.MELT -> MetroMixPreset.LOOP_OUT
+                profile?.volumeCurve == MetroMixVolumeCurve.WAVE -> MetroMixPreset.BEAT_BLEND
+                profile?.volumeCurve == MetroMixVolumeCurve.BALANCED -> MetroMixPreset.SMART_DJ
+                else -> preset
+            }
 
-        return when (preset) {
+        return when (effectivePreset) {
             null -> {
                 val fadeIn = easeOut(p)
                 val fadeOut = (1f - p) * (1f - p)
@@ -6180,11 +6722,15 @@ class MusicService :
         }
     }
 
-    private fun performCrossfadeSwap() {
+    private fun performCrossfadeSwap(
+        targetIndex: Int,
+        targetMediaItem: MediaItem?,
+    ) {
         val nextPlayer = secondaryPlayer ?: return
         isCrossfading = true
         val currentPlayer = player
         val metroMixPreset = activeMetroMixRuntimePreset ?: activeMetroMixPreset
+        val metroMixProfile = activeMetroMixRuntimeProfile
 
         fadingPlayer = currentPlayer
         player = nextPlayer
@@ -6223,11 +6769,27 @@ class MusicService :
         }
 
         val previousAudioSessionId = fadingPlayer?.audioSessionId ?: C.AUDIO_SESSION_ID_UNSET
-        currentMediaMetadata.value = player.currentMetadata
+        previousMediaItemIndex = targetIndex
+        val transitionedMetadata = targetMediaItem?.metadata ?: player.currentMetadata
+        currentMediaMetadata.value = transitionedMetadata
         updateCurrentAudioFormatFromTracks(player.currentTracks)
         _playerFlow.value = player
         updateNotification()
         updateWidgetUI(player.isPlaying)
+        lastPlaybackSpeed = -1.0f
+        discordUpdateJob?.cancel()
+        if (player.isPlaying && transitionedMetadata != null) {
+            scrobbleManager?.onSongStop()
+            scrobbleManager?.onSongStart(transitionedMetadata, duration = player.duration)
+            scope.launch {
+                database.song(transitionedMetadata.id).first()?.let { song ->
+                    updateDiscordRPC(song)
+                }
+            }
+        }
+        if (dataStore.get(PersistentQueueKey, true)) {
+            saveQueueToDisk()
+        }
 
         openAudioEffectSession()
 
@@ -6251,7 +6813,7 @@ class MusicService :
                     }
 
                     val progress = i / steps.toFloat()
-                    val (fadeIn, fadeOut) = crossfadeVolumePair(progress, metroMixPreset)
+                    val (fadeIn, fadeOut) = crossfadeVolumePair(progress, metroMixPreset, metroMixProfile)
 
                     try {
                         player.volume = startVolume * fadeIn
@@ -6287,6 +6849,7 @@ class MusicService :
         secondaryPlayer = null
         isCrossfading = false
         activeMetroMixRuntimePreset = null
+        activeMetroMixRuntimeProfile = null
         pendingMetroMixProfile = null
         if (scheduleNext) {
             scheduleCrossfade()
@@ -6305,6 +6868,7 @@ class MusicService :
         fadingPlayer = null
         isCrossfading = false
         activeMetroMixRuntimePreset = null
+        activeMetroMixRuntimeProfile = null
         pendingMetroMixProfile = null
         applyEffectiveVolume()
         sleepTimer.notifySongTransition()

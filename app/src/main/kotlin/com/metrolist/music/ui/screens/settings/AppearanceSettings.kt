@@ -186,7 +186,10 @@ fun AppearanceSettings(
 
     val availableMiniPlayerBackgroundStyles =
         MiniPlayerBackgroundStyle.entries.filter {
-            it != MiniPlayerBackgroundStyle.BLUR || Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+            it !in listOf(
+                MiniPlayerBackgroundStyle.BLUR,
+                MiniPlayerBackgroundStyle.GALAXY_BLUR,
+            ) || Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
         }
 
     var showMiniPlayerBackgroundDialog by rememberSaveable { mutableStateOf(false) }
@@ -358,7 +361,10 @@ fun AppearanceSettings(
 
     val availableBackgroundStyles =
         PlayerBackgroundStyle.entries.filter {
-            it != PlayerBackgroundStyle.BLUR || Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+            it !in listOf(
+                PlayerBackgroundStyle.BLUR,
+                PlayerBackgroundStyle.GALAXY_BLUR,
+            ) || Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
         }
 
     val (defaultChip, onDefaultChipChange) =
@@ -587,6 +593,7 @@ fun AppearanceSettings(
                     PlayerBackgroundStyle.DEFAULT -> stringResource(R.string.follow_theme)
                     PlayerBackgroundStyle.GRADIENT -> stringResource(R.string.gradient)
                     PlayerBackgroundStyle.BLUR -> stringResource(R.string.player_background_blur)
+                    PlayerBackgroundStyle.GALAXY_BLUR -> stringResource(R.string.player_background_galaxy_blur)
                 }
             },
         )
@@ -607,6 +614,7 @@ fun AppearanceSettings(
                     MiniPlayerBackgroundStyle.DEFAULT -> stringResource(R.string.follow_theme)
                     MiniPlayerBackgroundStyle.TRANSPARENT -> stringResource(R.string.transparent)
                     MiniPlayerBackgroundStyle.BLUR -> stringResource(R.string.player_background_blur)
+                    MiniPlayerBackgroundStyle.GALAXY_BLUR -> stringResource(R.string.player_background_galaxy_blur)
                     MiniPlayerBackgroundStyle.GRADIENT -> stringResource(R.string.gradient)
                     MiniPlayerBackgroundStyle.PURE_BLACK -> stringResource(R.string.pure_black)
                 }
@@ -1125,6 +1133,7 @@ fun AppearanceSettings(
                                                 MiniPlayerBackgroundStyle.DEFAULT -> stringResource(R.string.follow_theme)
                                                 MiniPlayerBackgroundStyle.TRANSPARENT -> stringResource(R.string.transparent)
                                                 MiniPlayerBackgroundStyle.BLUR -> stringResource(R.string.player_background_blur)
+                                                MiniPlayerBackgroundStyle.GALAXY_BLUR -> stringResource(R.string.player_background_galaxy_blur)
                                                 MiniPlayerBackgroundStyle.GRADIENT -> stringResource(R.string.gradient)
                                                 MiniPlayerBackgroundStyle.PURE_BLACK -> stringResource(R.string.pure_black)
                                             }
@@ -1181,6 +1190,7 @@ fun AppearanceSettings(
                                     PlayerBackgroundStyle.DEFAULT -> stringResource(R.string.follow_theme)
                                     PlayerBackgroundStyle.GRADIENT -> stringResource(R.string.gradient)
                                     PlayerBackgroundStyle.BLUR -> stringResource(R.string.player_background_blur)
+                                    PlayerBackgroundStyle.GALAXY_BLUR -> stringResource(R.string.player_background_galaxy_blur)
                                 },
                             )
                         },
