@@ -168,7 +168,7 @@ fun ArtistScreen(
     val showArtistDescription by rememberPreference(key = ShowArtistDescriptionKey, defaultValue = true)
     val showArtistSubscriberCount by rememberPreference(key = ShowArtistSubscriberCountKey, defaultValue = true)
     val showMonthlyListeners by rememberPreference(key = ShowMonthlyListenersKey, defaultValue = true)
-    val appleMusicArtistMotionBackground by rememberPreference(key = AppleMusicArtistMotionBackgroundKey, defaultValue = false)
+    val appleMusicArtistMotionBackground by rememberPreference(key = AppleMusicArtistMotionBackgroundKey, defaultValue = true)
 
     val lazyListState = rememberLazyListState()
     val snackbarHostState = remember { SnackbarHostState() }

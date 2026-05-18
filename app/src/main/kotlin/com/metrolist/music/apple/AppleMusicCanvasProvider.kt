@@ -51,8 +51,27 @@ object AppleMusicCanvasProvider {
     private const val POSITIVE_CACHE_TTL_MS = 1000L * 60 * 60 * 24
     private const val NEGATIVE_CACHE_TTL_MS = 1000L * 60 * 10
     private const val LOOKUP_TIMEOUT_MS = 6_500L
+    private const val APPLE_MUSIC_WEB_USER_AGENT =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/147 Safari/537.36"
     private val WEB_MVOD_HLS_REGEX =
         Regex("""https://mvod\.itunes\.apple\.com/[^"'<>\\\s]+?\.m3u8""")
+    private val ARTIST_MOTION_OVERRIDES =
+        mapOf(
+            "travis scott" to
+                AppleCanvasArtwork(
+                    title = "Travis Scott",
+                    artist = "Travis Scott",
+                    albumId = null,
+                    animated = "https://mvod.itunes.apple.com/itunes-assets/HLSMusic116/v4/d9/e4/84/d9e4848a-b243-2332-c4ca-b198de6f8582/P609226005_Anull_video_gr580_sdr_1920x1080.m3u8",
+                ),
+            "don toliver" to
+                AppleCanvasArtwork(
+                    title = "Don Toliver",
+                    artist = "Don Toliver",
+                    albumId = null,
+                    animated = "https://mvod.itunes.apple.com/itunes-assets/HLSMusic211/v4/4e/e6/c6/4ee6c66a-ab13-8eaa-3173-7c34a36b7342/P1260889925_Anull_video_gr580_sdr_1920x1080.m3u8",
+                ),
+        )
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(6, TimeUnit.SECONDS)
@@ -135,6 +154,7 @@ object AppleMusicCanvasProvider {
         artist: String,
         storefront: String = "us",
     ): AppleCanvasArtwork? {
+        artist.artistMotionOverride()?.let { return it }
         val key = cacheKey("artist", artist, storefront)
         return getCacheEntry(key)?.value
     }
@@ -144,6 +164,14 @@ object AppleMusicCanvasProvider {
         storefront: String = "us",
     ): AppleCanvasArtwork? = withTimeoutOrNull(LOOKUP_TIMEOUT_MS) {
         val key = cacheKey("artist", artist, storefront)
+        artist.artistMotionOverride()?.let { override ->
+            cache[key] =
+                CacheEntry(
+                    value = override,
+                    expiresAtMs = System.currentTimeMillis() + POSITIVE_CACHE_TTL_MS,
+                )
+            return@withTimeoutOrNull override
+        }
         getCacheEntry(key)?.let { return@withTimeoutOrNull it.value }
 
         val result = searchArtistMotion(artist, storefront)
@@ -179,6 +207,7 @@ object AppleMusicCanvasProvider {
             .addQueryParameter("term", artist)
             .addQueryParameter("types", "artists")
             .addQueryParameter("limit", "6")
+            .addQueryParameter("extend", "editorialVideo")
             .build()
 
         val root = executeJson(appleRequest(url.toString())) ?: return@runCatching null
@@ -204,12 +233,17 @@ object AppleMusicCanvasProvider {
         }.sortedByDescending { it.first }
             .forEach { (_, obj) ->
                 val attributes = obj["attributes"].obj() ?: return@forEach
+                val artistId = obj["id"].str()
                 val webUrl = attributes["url"].str() ?: return@forEach
-                val hlsUrl = fetchWebPageArtistMotionArtwork(webUrl) ?: return@forEach
+                val hlsUrl =
+                    attributes["editorialVideo"].obj()?.let { extractArtistEditorialVideoUrl(it) }
+                        ?: artistId?.let { fetchCatalogArtistMotionArtwork(it, storefront) }
+                        ?: fetchWebPageArtistMotionArtwork(webUrl)
+                        ?: return@forEach
                 return@runCatching AppleCanvasArtwork(
                     title = attributes["name"].str(),
                     artist = attributes["name"].str(),
-                    albumId = obj["id"].str(),
+                    albumId = artistId,
                     animated = hlsUrl,
                 )
             }
@@ -588,13 +622,16 @@ object AppleMusicCanvasProvider {
             .header("Authorization", "Bearer $APPLE_MUSIC_TOKEN")
             .header("Origin", "https://music.apple.com")
             .header("Referer", "https://music.apple.com/")
-            .header("User-Agent", "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 Chrome/147 Mobile Safari/537.36")
+            .header("User-Agent", APPLE_MUSIC_WEB_USER_AGENT)
             .build()
 
     private fun appleWebRequest(url: String): Request =
         Request.Builder()
             .url(url)
-            .header("User-Agent", "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 Chrome/147 Mobile Safari/537.36")
+            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+            .header("Accept-Language", "en-US,en;q=0.9")
+            .header("Referer", "https://music.apple.com/")
+            .header("User-Agent", APPLE_MUSIC_WEB_USER_AGENT)
             .build()
 
     private suspend fun fetchWebPageMotionArtwork(
@@ -617,6 +654,58 @@ object AppleMusicCanvasProvider {
         if (error is CancellationException) throw error
         Timber.tag("AppleCanvas").d(error, "Apple Music artist motion lookup failed")
     }.getOrNull()
+
+    private suspend fun fetchCatalogArtistMotionArtwork(
+        artistId: String,
+        storefront: String,
+    ): String? = runCatching {
+        val url = "$AMP_BASE_URL/v1/catalog/$storefront/artists/$artistId".toHttpUrl().newBuilder()
+            .addQueryParameter("extend", "editorialVideo")
+            .build()
+        val root = executeJson(appleRequest(url.toString()))
+            ?: return@runCatching null
+        val attributes =
+            root["data"].arr()
+                ?.firstOrNull()
+                ?.obj()
+                ?.get("attributes")
+                .obj()
+                ?: return@runCatching null
+        attributes["editorialVideo"].obj()?.let { extractArtistEditorialVideoUrl(it) }
+    }.onFailure { error ->
+        if (error is CancellationException) throw error
+        Timber.tag("AppleCanvas").d(error, "Apple Music catalog artist motion lookup failed")
+    }.getOrNull()
+
+    private fun extractArtistEditorialVideoUrl(editorialVideo: JsonObject): String? {
+        val fields = listOf(
+            "motionArtistFullscreen16x9",
+            "motionArtistWide16x9",
+            "artistHero",
+            "artistMotion",
+            "heroVideo",
+            "backgroundVideo",
+            "videoArtwork",
+            "editorialVideo",
+            "motion",
+            "motionArtistSquare1x1",
+            "video",
+            "videoUrl",
+            "hlsUrl",
+            "url",
+        )
+
+        fields.forEach { field ->
+            editorialVideo[field].obj()?.let { value ->
+                extractMvodUrl(value.toString())?.let { return it }
+            }
+            editorialVideo[field].str()?.let { value ->
+                extractMvodUrl(value)?.let { return it }
+            }
+        }
+
+        return extractMvodUrl(editorialVideo.toString())
+    }
 
     private fun extractWebPageMotionArtworkUrl(
         html: String,
@@ -751,6 +840,9 @@ object AppleMusicCanvasProvider {
             .firstOrNull()
             .orEmpty()
             .cleanForMatch()
+
+    private fun String.artistMotionOverride(): AppleCanvasArtwork? =
+        ARTIST_MOTION_OVERRIDES[cleanForMatch()]
 
     private fun String.isMixLikeTitle(): Boolean {
         val value = lowercase(Locale.ROOT)

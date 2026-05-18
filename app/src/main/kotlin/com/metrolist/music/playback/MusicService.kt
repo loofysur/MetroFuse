@@ -429,7 +429,7 @@ class MusicService :
             .flatMapLatest { mediaMetadata ->
                 database.song(mediaMetadata?.id)
             }.stateIn(scope, SharingStarted.Lazily, null)
-    private val currentFormat =
+    val currentFormat =
         currentMediaMetadata.flatMapLatest { mediaMetadata ->
             database.format(mediaMetadata?.id)
         }

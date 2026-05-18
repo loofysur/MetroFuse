@@ -131,31 +131,34 @@ class DiscordRpcConnection(
     }
 
     private suspend fun resolveImage(image: String): String? {
-        return if (image.startsWith("mp:") || image.startsWith("http")) {
-            ArtworkCache.getOrFetch(image) {
-                if (image.startsWith("mp:")) {
-                    Timber.tag(tag).d("Image already mp: — $image")
-                    image
+        val normalizedImage = image.trim()
+        if (normalizedImage.isBlank()) return null
+
+        return if (normalizedImage.startsWith("mp:") || normalizedImage.startsWith("http", ignoreCase = true)) {
+            ArtworkCache.getOrFetch(normalizedImage) {
+                if (normalizedImage.startsWith("mp:")) {
+                    Timber.tag(tag).d("Image already mp: $normalizedImage")
+                    normalizedImage
                 } else {
-                    Timber.tag(tag).d("Fetching external asset for: $image")
+                    Timber.tag(tag).d("Fetching external asset for: $normalizedImage")
                     val asset = fetchExternalAsset(
                         client = httpClient,
                         applicationId = APPLICATION_ID,
                         token = token,
-                        imageUrl = image,
+                        imageUrl = normalizedImage,
                         userAgent = userAgent,
                         superPropertiesBase64 = superPropertiesBase64,
                     )
                     if (asset != null) {
-                        Timber.tag(tag).i("External asset uploaded: $image -> $asset")
+                        Timber.tag(tag).i("External asset uploaded: $normalizedImage -> $asset")
                     } else {
-                        Timber.tag(tag).w("External asset upload failed for: $image, using raw URL")
+                        Timber.tag(tag).w("External asset upload failed for: $normalizedImage, omitting image until retry")
                     }
-                    asset ?: image
+                    asset
                 }
             }
         } else {
-            "mp:$image"
+            "mp:$normalizedImage"
         }
     }
 

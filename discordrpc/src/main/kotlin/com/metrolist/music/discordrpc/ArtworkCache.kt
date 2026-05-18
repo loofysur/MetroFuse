@@ -4,7 +4,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 internal object ArtworkCache {
     private const val SUCCESS_TTL_MS = 1000L * 60 * 60 * 24
-    private const val FAILURE_TTL_MS = 1000L * 60
+    private const val FAILURE_TTL_MS = 1000L * 15
 
     private data class CacheEntry(
         val value: String?,

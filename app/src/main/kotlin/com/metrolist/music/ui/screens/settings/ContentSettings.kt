@@ -115,7 +115,7 @@ fun ContentSettings(
     val (showArtistSubscriberCount, onShowArtistSubscriberCountChange) = rememberPreference(key = ShowArtistSubscriberCountKey, defaultValue = true)
     val (showMonthlyListeners, onShowMonthlyListenersChange) = rememberPreference(key = ShowMonthlyListenersKey, defaultValue = true)
     val (appleMusicArtistMotionBackground, onAppleMusicArtistMotionBackgroundChange) =
-        rememberPreference(key = AppleMusicArtistMotionBackgroundKey, defaultValue = false)
+        rememberPreference(key = AppleMusicArtistMotionBackgroundKey, defaultValue = true)
     val (proxyEnabled, onProxyEnabledChange) = rememberPreference(key = ProxyEnabledKey, defaultValue = false)
     val (proxyType, onProxyTypeChange) = rememberEnumPreference(key = ProxyTypeKey, defaultValue = Proxy.Type.HTTP)
     val (proxyUrl, onProxyUrlChange) = rememberPreference(key = ProxyUrlKey, defaultValue = "host:port")

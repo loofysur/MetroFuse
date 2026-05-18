@@ -1,12 +1,13 @@
 package com.metrolist.music.discordrpc
 
 import io.ktor.client.HttpClient
-import io.ktor.client.call.body
 import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
+import io.ktor.http.isSuccess
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -46,10 +47,18 @@ suspend fun fetchExternalAsset(
             contentType(ContentType.Application.Json)
             setBody(body)
         }
-        val text = response.body<String>()
+        val text = response.bodyAsText()
+        if (!response.status.isSuccess()) {
+            Timber.tag("ExtAssets").w("Asset upload failed with HTTP ${response.status.value} for ...$imageId: $text")
+            return@runCatching null
+        }
         val json = Json { ignoreUnknownKeys = true }
         val list = json.decodeFromString<List<ExternalAssetResponse>>(text)
-        val result = list.firstOrNull()?.externalAssetPath?.let { "mp:$it" }
+        val result =
+            list
+                .firstOrNull()
+                ?.externalAssetPath
+                ?.toDiscordAssetPath()
         if (result != null) {
             Timber.tag("ExtAssets").i("Asset uploaded: ...$imageId -> $result")
         } else {
@@ -61,3 +70,6 @@ suspend fun fetchExternalAsset(
         null
     }
 }
+
+private fun String.toDiscordAssetPath(): String =
+    if (startsWith("mp:")) this else "mp:$this"
