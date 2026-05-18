@@ -186,10 +186,7 @@ fun AppearanceSettings(
 
     val availableMiniPlayerBackgroundStyles =
         MiniPlayerBackgroundStyle.entries.filter {
-            it !in listOf(
-                MiniPlayerBackgroundStyle.BLUR,
-                MiniPlayerBackgroundStyle.GALAXY_BLUR,
-            ) || Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+            it != MiniPlayerBackgroundStyle.BLUR || Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
         }
 
     var showMiniPlayerBackgroundDialog by rememberSaveable { mutableStateOf(false) }
@@ -361,10 +358,7 @@ fun AppearanceSettings(
 
     val availableBackgroundStyles =
         PlayerBackgroundStyle.entries.filter {
-            it !in listOf(
-                PlayerBackgroundStyle.BLUR,
-                PlayerBackgroundStyle.GALAXY_BLUR,
-            ) || Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+            it != PlayerBackgroundStyle.BLUR || Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
         }
 
     val (defaultChip, onDefaultChipChange) =
