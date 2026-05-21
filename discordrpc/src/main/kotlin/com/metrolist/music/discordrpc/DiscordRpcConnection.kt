@@ -7,9 +7,17 @@ import com.metrolist.music.discordrpc.entities.Metadata
 import com.metrolist.music.discordrpc.entities.Timestamps
 import com.metrolist.music.discordrpc.entities.Presence
 import io.ktor.client.HttpClient
+import io.ktor.client.call.body
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.statement.bodyAsText
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import org.json.JSONObject
 import timber.log.Timber
 
@@ -31,6 +39,11 @@ class DiscordRpcConnection(
 ) {
     private val tag = "DiscordRpc"
     private val gateway = GatewayWebSocket(token, os, browser, device)
+    private val httpClient = HttpClient()
+    private val httpScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var lastUpdateTime = 0L
+    private val minUpdateInterval = 500L // Minimum 500ms between updates
+
     fun isRunning(): Boolean = gateway.isSessionEstablished()
 
     fun connect() {
@@ -53,26 +66,38 @@ class DiscordRpcConnection(
         since: Long? = null,
         applicationId: String? = null,
     ) {
+        val currentTime = System.currentTimeMillis()
+        val elapsed = currentTime - lastUpdateTime
+        if (elapsed < minUpdateInterval) {
+            val delay = minUpdateInterval - elapsed
+            Timber.tag(tag).d("setActivity: debouncing, waiting ${delay}ms (last update ${elapsed}ms ago)")
+            delay(delay)
+        }
+        lastUpdateTime = System.currentTimeMillis()
+
+        val startTime = lastUpdateTime
         Timber.tag(tag).i("setActivity: type=$type state=$state details=$details buttons=${buttons?.size}")
+        Timber.tag(tag).d("setActivity: largeImage present=${largeImage != null}, smallImage present=${smallImage != null}")
 
         if (!isRunning()) {
             Timber.tag(tag).d("setActivity: gateway not running, connecting...")
             gateway.connect()
         }
 
-        val resolvedApplicationId = applicationId ?: APPLICATION_ID
         val resolvedLargeImage = largeImage?.let {
-            Timber.tag(tag).v("Resolving large image: $it")
+            Timber.tag(tag).v("Resolving large image: ${it.takeLast(50)}")
             resolveImage(it).also { result ->
                 Timber.tag(tag).v("Large image resolved: $result")
             }
         }
         val resolvedSmallImage = smallImage?.let {
-            Timber.tag(tag).v("Resolving small image: $it")
+            Timber.tag(tag).v("Resolving small image: ${it.takeLast(50)}")
             resolveImage(it).also { result ->
                 Timber.tag(tag).v("Small image resolved: $result")
             }
         }
+
+        Timber.tag(tag).d("Image resolution took ${System.currentTimeMillis() - startTime}ms")
 
         val buttonLabels = buttons?.map { it.label }?.takeIf { it.isNotEmpty() }
         val buttonUrls = buttons?.map { it.url }?.takeIf { it.isNotEmpty() }
@@ -84,7 +109,7 @@ class DiscordRpcConnection(
                     Activity(
                         name = name ?: "Metrolist",
                         type = type.value,
-                        applicationId = resolvedApplicationId,
+                        applicationId = applicationId,
                         state = state,
                         details = details,
                         timestamps = timestamps,
@@ -105,7 +130,7 @@ class DiscordRpcConnection(
                 afk = false,
             ),
         )
-        Timber.tag(tag).i("setActivity completed")
+        Timber.tag(tag).i("setActivity completed in ${System.currentTimeMillis() - startTime}ms")
     }
 
     suspend fun clearActivity(status: String = "online") {
@@ -119,25 +144,47 @@ class DiscordRpcConnection(
         Timber.tag(tag).i("close() called")
         clearActivity()
         gateway.close()
+        httpScope.cancel()
+        httpClient.close()
     }
 
     fun closeDirect() {
         Timber.tag(tag).i("closeDirect() called")
         gateway.close()
+        httpScope.cancel()
+        httpClient.close()
     }
 
-    private fun resolveImage(image: String): String? {
-        val normalizedImage = image.trim()
-        if (normalizedImage.isBlank()) return null
-
-        return if (normalizedImage.startsWith("mp:")) {
-            Timber.tag(tag).d("Image already mp: $normalizedImage")
-            normalizedImage
-        } else if (normalizedImage.startsWith("http", ignoreCase = true)) {
-            Timber.tag(tag).d("Using external image URL directly: $normalizedImage")
-            normalizedImage
+    private suspend fun resolveImage(image: String): String? {
+        if (image.isBlank()) return null
+        return if (image.startsWith("mp:") || image.startsWith("http")) {
+            ArtworkCache.getOrFetch(image) {
+                if (image.startsWith("mp:")) {
+                    Timber.tag(tag).d("Image already mp: — $image")
+                    image
+                } else {
+                    Timber.tag(tag).d("Fetching external asset for: $image")
+                    val deferred = httpScope.async {
+                        fetchExternalAsset(
+                            client = httpClient,
+                            applicationId = APPLICATION_ID,
+                            token = token,
+                            imageUrl = image,
+                            userAgent = userAgent,
+                            superPropertiesBase64 = superPropertiesBase64,
+                        )
+                    }
+                    val asset = deferred.await()
+                    if (asset != null) {
+                        Timber.tag(tag).i("External asset uploaded: $image -> $asset")
+                    } else {
+                        Timber.tag(tag).w("External asset upload failed for: $image, using raw URL")
+                    }
+                    asset ?: image
+                }
+            }
         } else {
-            "mp:$normalizedImage"
+            "mp:$image"
         }
     }
 
@@ -161,7 +208,7 @@ class DiscordRpcConnection(
                     }
                 }
                 val text = response.bodyAsText()
-                val json = JSONObject(text)
+                val json = org.json.JSONObject(text)
                 val id = json.getString("id")
                 val username = json.getString("username")
                 val name = json.optString("global_name", username)

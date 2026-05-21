@@ -879,6 +879,12 @@ fun RichPresence(
     val defaultButton1Text = stringResource(R.string.discord_default_button_1)
     val defaultButton2Text = stringResource(R.string.discord_default_button_2)
     val defaultButton2Url = stringResource(R.string.discord_default_button_2_url)
+    val artworkUrl = song?.song?.thumbnailUrl?.takeIf { it.isNotBlank() }
+    val durationMillis = song?.song?.duration?.takeIf { it > 0 }?.times(1000L)
+    val safePositionMillis =
+        durationMillis
+            ?.let { currentPlaybackTimeMillis.coerceIn(0L, it) }
+            ?: currentPlaybackTimeMillis.coerceAtLeast(0L)
 
     val activityLabel =
         when (activityType) {
@@ -910,28 +916,37 @@ fun RichPresence(
 
             Row(verticalAlignment = Alignment.Top) {
                 Box(Modifier.size(108.dp)) {
-                    AsyncImage(
-                        model = song?.song?.thumbnailUrl,
-                        contentDescription = null,
-                        modifier =
-                            Modifier
-                                .size(96.dp)
-                                .clip(RoundedCornerShape(3.dp))
-                                .align(Alignment.TopStart)
-                                .run {
-                                    if (song == null) {
-                                        border(
-                                            2.dp,
-                                            MaterialTheme.colorScheme.onSurface,
-                                            RoundedCornerShape(3.dp),
-                                        )
-                                    } else {
-                                        this
-                                    }
-                                },
-                    )
+                    if (artworkUrl != null) {
+                        AsyncImage(
+                            model = artworkUrl,
+                            contentDescription = null,
+                            modifier =
+                                Modifier
+                                    .size(96.dp)
+                                    .clip(RoundedCornerShape(3.dp))
+                                    .align(Alignment.TopStart),
+                        )
+                    } else {
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            shape = RoundedCornerShape(3.dp),
+                            modifier =
+                                Modifier
+                                    .size(96.dp)
+                                    .align(Alignment.TopStart),
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    painter = painterResource(R.drawable.music_note),
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(34.dp),
+                                )
+                            }
+                        }
+                    }
 
-                    song?.artists?.firstOrNull()?.thumbnailUrl?.let {
+                    song?.artists?.firstOrNull()?.thumbnailUrl?.takeIf { it.isNotBlank() }?.let {
                         Box(
                             modifier =
                                 Modifier
@@ -987,10 +1002,10 @@ fun RichPresence(
                         )
                     }
 
-                    if (song != null) {
+                    if (durationMillis != null) {
                         SongProgressBar(
-                            currentTimeMillis = currentPlaybackTimeMillis,
-                            durationMillis = song.song.duration.times(1000L),
+                            currentTimeMillis = safePositionMillis,
+                            durationMillis = durationMillis,
                         )
                     }
                 }

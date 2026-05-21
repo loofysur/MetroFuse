@@ -1112,12 +1112,10 @@ class MusicService :
             .debounce(300)
             .distinctUntilChanged()
             .collect(scope) { (key, enabled) ->
-                if (discordRpc?.isRpcRunning() == true) {
-                    discordRpc?.closeRPC()
-                }
+                discordRpc?.closeRPC()
                 discordRpc = null
-                if (key != null && enabled) {
-                    discordRpc = DiscordRPC(this, key)
+                if (!key.isNullOrBlank() && enabled) {
+                    discordRpc = DiscordRPC(this, key).also { it.start() }
                     if (player.playbackState == Player.STATE_READY && player.playWhenReady) {
                         currentSong.value?.let {
                             updateDiscordRPC(it, true)
@@ -6443,9 +6441,7 @@ class MusicService :
         if (dataStore.get(PersistentQueueKey, true)) {
             saveQueueToDisk()
         }
-        if (discordRpc?.isRpcRunning() == true) {
-            discordRpc?.closeRPC()
-        }
+        discordRpc?.closeRPC()
         discordRpc = null
         connectivityObserver.unregister()
         abandonAudioFocus()
