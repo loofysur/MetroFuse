@@ -209,7 +209,13 @@ constructor(
                 ),
             ),
         ) { dataSpec ->
-            val mediaId = dataSpec.key?.let(::mediaIdFromDataSpecKey) ?: error("No media id")
+            val mediaId =
+                dataSpec.key?.let(::mediaIdFromDataSpecKey)
+                    ?: dataSpec.uri
+                        .takeIf { it.scheme.isNullOrBlank() }
+                        ?.toString()
+                        ?.takeIf { it.isNotBlank() }
+                    ?: error("No media id")
             val streamSelectionKey = currentStreamSelectionKey(context)
 
             if (AppleMusicWrapperDataSource.isAppleUri(dataSpec.uri)) {
@@ -409,15 +415,11 @@ constructor(
             Result.failure(IllegalStateException("Qobuz not attempted yet"))
         val attemptedProviders = mutableSetOf<AudioProviderOrderItem>()
         val orderedProviders =
-            if (appleMusicForceAlac) {
-                listOf(AudioProviderOrderItem.APPLE_MUSIC)
-            } else {
-                buildList {
-                    if (directSoundCloudMediaId) add(AudioProviderOrderItem.SOUNDCLOUD)
-                    if (directDeezerMediaId) add(AudioProviderOrderItem.DEEZER)
-                    addAll(audioProviderOrder)
-                }.distinct()
-            }
+            buildList {
+                if (directSoundCloudMediaId) add(AudioProviderOrderItem.SOUNDCLOUD)
+                if (directDeezerMediaId) add(AudioProviderOrderItem.DEEZER)
+                addAll(audioProviderOrder)
+            }.distinct()
 
         suspend fun attemptProvider(provider: AudioProviderOrderItem): DownloadStreamResolution? {
             if (provider in attemptedProviders) return null
@@ -517,15 +519,6 @@ constructor(
                     appleError,
                 )
             }
-        }
-
-        if (appleMusicForceAlac) {
-            val appleError = appleAttempt.exceptionOrNull()
-                ?: IllegalStateException("Apple Music ALAC was not attempted")
-            throw IllegalStateException(
-                "Apple Music ALAC failed: ${appleError.message ?: appleError.javaClass.simpleName}",
-                appleError,
-            )
         }
 
         if (!attemptedProviders.contains(AudioProviderOrderItem.SOUNDCLOUD) && !directSoundCloudMediaId) {

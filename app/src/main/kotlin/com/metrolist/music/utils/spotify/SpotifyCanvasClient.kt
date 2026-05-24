@@ -500,10 +500,12 @@ object SpotifyCanvasClient {
         val artists: List<String>,
         val album: String?,
         val durationMs: Long?,
+        val isrc: String?,
     ) {
         val key: String
             get() =
                 listOf(
+                    isrc.orEmpty(),
                     normalizeForMatch(title),
                     artists.joinToString("|") { normalizeForMatch(it) },
                     normalizeForMatch(album.orEmpty()),
@@ -1979,8 +1981,12 @@ object SpotifyCanvasClient {
         val nextOffset =
             pagingInfo?.long("nextOffset")?.toInt()
                 ?.takeIf { it > pageOffset }
-                ?: (pageOffset + distinctSongs.size)
-                    .takeIf { next -> distinctSongs.isNotEmpty() && (total == null || next < total) && next > pageOffset }
+                ?: spotifyPagedNextOffset(
+                    nextUrl = null,
+                    pageOffset = pageOffset,
+                    itemCount = distinctSongs.size,
+                    total = total,
+                )
 
         return ExternalPlaylistPage(
             playlist =
@@ -2037,8 +2043,12 @@ object SpotifyCanvasClient {
                     ?: songs.size.takeIf { it > 0 }
                     ?: limit
             val nextOffset =
-                (pageOffset + pageLimit)
-                    .takeIf { next -> songs.isNotEmpty() && (total == null || next < total) && next > pageOffset }
+                spotifyPagedNextOffset(
+                    nextUrl = null,
+                    pageOffset = pageOffset,
+                    itemCount = songs.size,
+                    total = total,
+                )
 
             ExternalPlaylistPage(
                 playlist =
@@ -2656,9 +2666,12 @@ object SpotifyCanvasClient {
                 page.string("next") != null ||
                     total?.let { expected -> expected > pageOffset + rawItems.size } == true
             val nextOffset =
-                spotifyNextOffset(page.string("next"))
-                    ?: (pageOffset + pageLimit)
-                        .takeIf { next -> rawItems.isNotEmpty() && hasMore && next > pageOffset }
+                spotifyPagedNextOffset(
+                    nextUrl = page.string("next"),
+                    pageOffset = pageOffset,
+                    itemCount = rawItems.size,
+                    total = total,
+                ).takeIf { hasMore || total == null }
 
             ExternalPlaylistPage(
                 playlist =
@@ -2843,9 +2856,12 @@ object SpotifyCanvasClient {
                 page.string("next") != null ||
                     total?.let { expected -> expected > pageOffset + rawItems.size } == true
             val nextOffset =
-                spotifyNextOffset(page.string("next"))
-                    ?: (pageOffset + pageLimit)
-                    .takeIf { next -> rawItems.isNotEmpty() && hasMore && next > pageOffset }
+                spotifyPagedNextOffset(
+                    nextUrl = page.string("next"),
+                    pageOffset = pageOffset,
+                    itemCount = rawItems.size,
+                    total = total,
+                ).takeIf { hasMore || total == null }
 
             ExternalPlaylistPage(
                 playlist =
@@ -2908,8 +2924,12 @@ object SpotifyCanvasClient {
                     .mapNotNull { it.obj?.toSpotifyAlbumSong(albumRoot) }
                     .distinctBy { it.id }
             val nextOffset =
-                (pageOffset + pageLimit)
-                    .takeIf { next -> songs.isNotEmpty() && (totalTracks == null || next < totalTracks) }
+                spotifyPagedNextOffset(
+                    nextUrl = page.string("next"),
+                    pageOffset = pageOffset,
+                    itemCount = songs.size,
+                    total = totalTracks,
+                )
             val albumTitle = albumRoot.string("name") ?: "Spotify album"
             val artists =
                 albumRoot
@@ -3497,14 +3517,15 @@ object SpotifyCanvasClient {
                 if (rawItems.isEmpty()) break
 
                 songs += newSongs
-                val hasMore =
-                    page.string("next") != null ||
-                        total?.let { expected -> expected > pageOffset + rawItems.size } == true
-                val nextOffset = pageOffset + pageLimit
-                if (nextOffset <= offset) break
+                if (newSongs.isEmpty() && offset > 0) break
+                val nextOffset =
+                    spotifyPagedNextOffset(
+                        nextUrl = page.string("next"),
+                        pageOffset = pageOffset,
+                        itemCount = rawItems.size,
+                        total = total,
+                    ) ?: break
                 offset = nextOffset
-
-                if (!hasMore) break
             }
 
             SpotifyPlaylistTrackLoad(
@@ -3519,6 +3540,7 @@ object SpotifyCanvasClient {
     ): List<SongItem> =
         withContext(Dispatchers.IO) {
             val songs = mutableListOf<SongItem>()
+            val seenSongIds = mutableSetOf<String>()
             var offset = 0
             var total: Int? = null
 
@@ -3547,13 +3569,17 @@ object SpotifyCanvasClient {
                 val pageSongs = page.spotifyMobilePlaylistTracks()
                 if (pageSongs.isEmpty()) break
 
-                songs += pageSongs
-                val nextOffset = pageOffset + pageLimit
-                if (nextOffset <= offset) break
+                val newSongs = pageSongs.filter { song -> seenSongIds.add(song.id) }
+                songs += newSongs
+                if (newSongs.isEmpty() && offset > 0) break
+                val nextOffset =
+                    spotifyPagedNextOffset(
+                        nextUrl = null,
+                        pageOffset = pageOffset,
+                        itemCount = pageSongs.size,
+                        total = total,
+                    ) ?: break
                 offset = nextOffset
-
-                val expectedTotal = total
-                if (expectedTotal != null && offset >= expectedTotal) break
             }
 
             songs.distinctBy { it.id }
@@ -3705,6 +3731,22 @@ object SpotifyCanvasClient {
         return json.parseToJsonElement(decoded).jsonObject
     }
 
+    private fun spotifyPagedNextOffset(
+        nextUrl: String?,
+        pageOffset: Int,
+        itemCount: Int,
+        total: Int?,
+    ): Int? {
+        if (itemCount <= 0) return null
+        spotifyNextOffset(nextUrl)
+            ?.takeIf { it > pageOffset }
+            ?.let { return it }
+
+        val nextOffset = pageOffset + itemCount
+        if (nextOffset <= pageOffset) return null
+        return nextOffset.takeIf { total == null || it < total }
+    }
+
     private fun spotifyNextOffset(nextUrl: String?): Int? =
         nextUrl
             ?.takeIf { it.isNotBlank() }
@@ -3724,8 +3766,7 @@ object SpotifyCanvasClient {
             ?.let { return it.value.ifBlank { null } }
 
         val candidates =
-            buildQueries(expectation)
-                .flatMap { searchTracks(it, cookie) }
+            resolveTrackCandidates(expectation, cookie)
                 .distinctBy { it.uri }
 
         val bestMatch =
@@ -4011,6 +4052,65 @@ object SpotifyCanvasClient {
             ?.items
             .orEmpty()
             .mapNotNull { it.item?.data?.takeIf { track -> !track.uri.isNullOrBlank() } }
+    }
+
+    private suspend fun resolveTrackCandidates(
+        expectation: Expectation,
+        cookie: String,
+    ): List<SearchTrack> {
+        val graphCandidates =
+            buildQueries(expectation)
+                .flatMap { query ->
+                    runCatching { searchTracks(query, cookie) }
+                        .onFailure { error -> Timber.w(error, "Spotify canvas GraphQL search failed for %s", query) }
+                        .getOrDefault(emptyList())
+                }
+
+        graphCandidates
+            .map { it to scoreTrack(it, expectation) }
+            .maxByOrNull { it.second }
+            ?.takeIf { it.second >= 85 }
+            ?.let { return graphCandidates }
+
+        val webQueries =
+            buildQueries(expectation)
+                .take(if (expectation.isrc != null) 3 else 2)
+        val webCandidates =
+            webQueries.flatMap { query ->
+                runCatching { searchTracksFromWebApi(query, cookie) }
+                    .onFailure { error -> Timber.w(error, "Spotify canvas Web API search failed for %s", query) }
+                    .getOrDefault(emptyList())
+            }
+
+        return graphCandidates + webCandidates
+    }
+
+    private suspend fun searchTracksFromWebApi(
+        query: String,
+        cookie: String,
+    ): List<SearchTrack> {
+        if (query.isBlank()) return emptyList()
+
+        val root =
+            spotifyApiGet(
+                url =
+                    "https://api.spotify.com/v1/search"
+                        .toHttpUrl()
+                        .newBuilder()
+                        .addQueryParameter("q", query)
+                        .addQueryParameter("type", "track")
+                        .addQueryParameter("limit", "10")
+                        .addQueryParameter("market", "from_token")
+                        .build(),
+                normalizedCookie = cookie,
+                operation = "Spotify canvas track search",
+            )
+
+        return root
+            .obj("tracks")
+            ?.array("items")
+            .orEmpty()
+            .mapNotNull { it.obj?.toSearchTrackCandidate() }
     }
 
     private suspend inline fun <reified T> postGraphQl(
@@ -4920,7 +5020,12 @@ object SpotifyCanvasClient {
                 .filter { it.isNotBlank() }
         val album = mediaMetadata.album?.title?.trim()?.takeIf { it.isNotBlank() }
         val durationMs = mediaMetadata.duration.takeIf { it > 0 }?.times(1000L)
-        return if (artists.isEmpty() && album == null) null else Expectation(title, artists, album, durationMs)
+        val isrc = ProviderIsrc.firstOf(mediaMetadata.id)
+        return if (artists.isEmpty() && album == null && isrc == null) {
+            null
+        } else {
+            Expectation(title, artists, album, durationMs, isrc)
+        }
     }
 
     private fun buildQueries(expectation: Expectation): List<String> {
@@ -4929,6 +5034,7 @@ object SpotifyCanvasClient {
         val albumQuery = expectation.album?.let(::sanitize)
 
         return listOfNotNull(
+            expectation.isrc?.let { "isrc:$it" },
             listOfNotNull(artistQuery, title, albumQuery).joinToString(" ").trim().takeIf { it.isNotBlank() },
             listOfNotNull(artistQuery, title).joinToString(" ").trim().takeIf { it.isNotBlank() },
             title.takeIf { it.isNotBlank() },
@@ -4950,6 +5056,8 @@ object SpotifyCanvasClient {
         val expectedArtists = expectation.artists.map(::normalizeForMatch)
         val album = normalizeForMatch(candidate.albumOfTrack?.name.orEmpty())
         val expectedAlbum = normalizeForMatch(expectation.album.orEmpty())
+        val expectedIsrc = expectation.isrc
+        val candidateIsrc = ProviderIsrc.normalize(candidate.isrc)
         val durationPenalty =
             expectation.durationMs?.let { expectedDuration ->
                 abs((candidate.duration?.totalMilliseconds ?: expectedDuration) - expectedDuration)
@@ -4990,8 +5098,14 @@ object SpotifyCanvasClient {
                 durationPenalty >= 30_000L -> -12
                 else -> 0
             }
+        val isrcScore =
+            when {
+                expectedIsrc == null || candidateIsrc == null -> 0
+                expectedIsrc.equals(candidateIsrc, ignoreCase = true) -> 110
+                else -> -120
+            }
 
-        return titleScore + artistScore + albumScore + durationScore - disfavoredPenalty(
+        return isrcScore + titleScore + artistScore + albumScore + durationScore - disfavoredPenalty(
             candidateTitle = candidate.name.orEmpty(),
             expectedTitle = expectation.title,
         )
@@ -5338,6 +5452,28 @@ object SpotifyCanvasClient {
             duration = long("duration_ms")?.div(1000)?.toInt(),
             thumbnail = albumObject?.spotifyWebApiImageUrl().orEmpty(),
             explicit = boolean("explicit"),
+        )
+    }
+
+    private fun JsonObject.toSearchTrackCandidate(): SearchTrack? {
+        val id = spotifyEntityId(string("id") ?: string("uri") ?: return null, "track") ?: return null
+        val isrc = obj("external_ids")?.string("isrc")?.let(ProviderIsrc::normalize)
+        cacheTrackIsrc(id, isrc)
+        return SearchTrack(
+            uri = "spotify:track:$id",
+            name = string("name"),
+            duration = SearchDuration(long("duration_ms")),
+            artists =
+                SearchArtists(
+                    array("artists")
+                        .orEmpty()
+                        .mapNotNull { artist ->
+                            val name = artist.obj?.string("name") ?: return@mapNotNull null
+                            SearchArtist(SearchArtistProfile(name))
+                        },
+                ),
+            albumOfTrack = obj("album")?.string("name")?.let(::SearchAlbum),
+            isrc = isrc,
         )
     }
 
@@ -6912,6 +7048,7 @@ object SpotifyCanvasClient {
         val duration: SearchDuration? = null,
         val artists: SearchArtists? = null,
         val albumOfTrack: SearchAlbum? = null,
+        val isrc: String? = null,
     )
 
     @Serializable

@@ -4012,12 +4012,11 @@ class MusicService :
         val currentUri = player.currentMediaItem?.localConfiguration?.uri
         val currentIsApple = currentUri?.let(AppleMusicWrapperDataSource::isAppleUri) == true
         val applePrimary =
-            dataStore.get(AppleMusicForceAlacKey, false) ||
-                isProviderFirstInPlaybackOrder(
-                    mediaId = mediaId,
-                    provider = AudioProviderOrderItem.APPLE_MUSIC,
-                    skipAppleForThisAttempt = skipAppleOnceMediaIds.contains(mediaId),
-                )
+            isProviderFirstInPlaybackOrder(
+                mediaId = mediaId,
+                provider = AudioProviderOrderItem.APPLE_MUSIC,
+                skipAppleForThisAttempt = skipAppleOnceMediaIds.contains(mediaId),
+            )
         if (!currentIsApple && !applePrimary) return
         scope.launch(Dispatchers.IO) {
             val song = database.getSongByIdBlocking(mediaId)
@@ -4089,9 +4088,6 @@ class MusicService :
         if (providerOverride != null) {
             return providerOverride.provider == provider
         }
-        if (dataStore.get(AppleMusicForceAlacKey, false)) {
-            return provider == AudioProviderOrderItem.APPLE_MUSIC
-        }
 
         val orderedProviders =
             buildList {
@@ -4160,6 +4156,10 @@ class MusicService :
             val mediaId = explicitProviderMediaId
                 ?: dataSpec.uri.mediaIdFromPendingTidalManifestUri()
                 ?: dataSpec.key?.let(::mediaIdFromDataSpecKey)
+                ?: dataSpec.uri
+                    .takeIf { it.scheme.isNullOrBlank() }
+                    ?.toString()
+                    ?.takeIf { it.isNotBlank() }
                 ?: return@Factory dataSpec
             val isPendingTidalDashRequest = dataSpec.uri.isPendingTidalDashRequest()
 
@@ -4660,17 +4660,13 @@ class MusicService :
         val attemptedProviders = mutableSetOf<AudioProviderOrderItem>()
         val spotifyIsrc = resolveSpotifyIsrcForMatching(mediaId, song, queuedMetadata)
         val orderedProviders =
-            if (appleMusicForceAlac && providerOverride == null) {
-                listOf(AudioProviderOrderItem.APPLE_MUSIC)
-            } else {
-                buildList {
-                    providerOverride?.provider?.let(::add)
-                    if (directSoundCloudMediaId) add(AudioProviderOrderItem.SOUNDCLOUD)
-                    if (directTidalMediaId) add(AudioProviderOrderItem.TIDAL)
-                    if (directDeezerMediaId) add(AudioProviderOrderItem.DEEZER)
-                    addAll(audioProviderOrder)
-                }.distinct()
-            }
+            buildList {
+                providerOverride?.provider?.let(::add)
+                if (directSoundCloudMediaId) add(AudioProviderOrderItem.SOUNDCLOUD)
+                if (directTidalMediaId) add(AudioProviderOrderItem.TIDAL)
+                if (directDeezerMediaId) add(AudioProviderOrderItem.DEEZER)
+                addAll(audioProviderOrder)
+            }.distinct()
 
         fun isForcedProvider(provider: AudioProviderOrderItem): Boolean =
             providerOverride?.provider == provider
@@ -4832,10 +4828,6 @@ class MusicService :
             if (appleMusicForceAlac && provider == AudioProviderOrderItem.APPLE_MUSIC) {
                 throwProviderFailure("Apple Music ALAC", appleAttempt.exceptionOrNull())
             }
-        }
-
-        if (appleMusicForceAlac) {
-            throwProviderFailure("Apple Music ALAC", appleAttempt.exceptionOrNull())
         }
 
         if (!attemptedProviders.contains(AudioProviderOrderItem.SOUNDCLOUD) && !directSoundCloudMediaId) {
@@ -5753,28 +5745,7 @@ class MusicService :
             }.onFailure { error ->
                 Timber.tag("AppleALAC").w(error, "Failed to resolve stream before media source creation")
             }.getOrDefault(mediaItem)
-            val routedItem = if (resolvedItem.localConfiguration?.uri?.let(AppleMusicWrapperDataSource::isAppleUri) == true) {
-                resolvedItem
-            } else {
-                val mediaId = mediaItem.mediaIdForPlaybackSource()
-                val appleSkippedForAttempt = mediaId?.let(skipAppleOnceMediaIds::contains) == true
-                val applePrimary =
-                    mediaId != null &&
-                        isProviderFirstInPlaybackOrder(
-                            mediaId = mediaId,
-                            provider = AudioProviderOrderItem.APPLE_MUSIC,
-                            skipAppleForThisAttempt = appleSkippedForAttempt,
-                        )
-                if (mediaId != null && applePrimary) {
-                    mediaItem.buildPendingAppleRoute(mediaId)?.also {
-                        Timber.tag("AppleALAC").d(
-                            "Forced pending HLS source before progressive selection for $mediaId",
-                        )
-                    } ?: resolvedItem
-                } else {
-                    resolvedItem
-                }
-            }
+            val routedItem = resolvedItem
             val uri = routedItem.localConfiguration?.uri
             val isHlsSource =
                 uri != null &&
