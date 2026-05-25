@@ -33,11 +33,15 @@ import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -292,7 +296,7 @@ private fun List<com.metrolist.music.lyrics.WordTimestamp>.toInlineKaraokeSegmen
         val segmentText =
             buildString {
                 append(word.text.replace('\n', ' '))
-                if (word.hasTrailingSpace && index < lastIndex) append(' ')
+                if (shouldInsertInlineSpaceAfter(index)) append(' ')
             }
         if (segmentText.isEmpty()) return@mapIndexedNotNull null
         val startIndex = textIndex
@@ -313,6 +317,26 @@ private fun List<com.metrolist.music.lyrics.WordTimestamp>.toInlineKaraokeSegmen
     }
 }
 
+private fun List<com.metrolist.music.lyrics.WordTimestamp>.shouldInsertInlineSpaceAfter(index: Int): Boolean {
+    if (index >= lastIndex) return false
+    val word = get(index)
+    val next = get(index + 1)
+    if (word.hasTrailingSpace) return true
+
+    val currentText = word.text.trimEnd()
+    val nextText = next.text.trimStart()
+    if (currentText.isEmpty() || nextText.isEmpty()) return false
+
+    val currentLast = currentText.last()
+    val nextFirst = nextText.first()
+    if (nextFirst in NoLeadingSpaceBefore) return false
+    if (currentLast in NoTrailingSpaceAfter) return false
+    return true
+}
+
+private val NoLeadingSpaceBefore = setOf(',', '.', '!', '?', ';', ':', ')', ']', '}', '\u2026', '%', '\u2019', '\'')
+private val NoTrailingSpaceAfter = setOf('(', '[', '{', '\u00bf', '\u00a1', '\u201c', '"', '-')
+
 @Composable
 private fun SmoothWrappedLyricLine(
     line: InlineKaraokeLine,
@@ -320,6 +344,11 @@ private fun SmoothWrappedLyricLine(
     textColor: Color,
     style: TextStyle,
 ) {
+    val density = LocalDensity.current
+    val fillLeadPx = remember(density) { with(density) { InlineLyricFillLead.toPx() } }
+    val sweepVerticalPaddingPx = remember(density) { with(density) { InlineLyricSweepVerticalPadding.toPx() } }
+    var layoutResult by remember(line.text) { mutableStateOf<TextLayoutResult?>(null) }
+
     Box(
         modifier =
             Modifier
@@ -329,10 +358,10 @@ private fun SmoothWrappedLyricLine(
         contentAlignment = Alignment.CenterStart,
     ) {
         Text(
-            text = line.smoothInlineLyricsText(positionMs, textColor),
+            text = line.text,
             style =
                 style.copy(
-                    color = textColor.copy(alpha = 0.38f),
+                    color = textColor.copy(alpha = 0.40f),
                     shadow =
                         Shadow(
                             color = textColor.copy(alpha = 0.10f),
@@ -343,66 +372,123 @@ private fun SmoothWrappedLyricLine(
             maxLines = MaxSmoothInlineTextLines,
             softWrap = true,
             overflow = TextOverflow.Ellipsis,
+            onTextLayout = { layoutResult = it },
             modifier = Modifier.fillMaxWidth(),
+        )
+        Text(
+            text = line.text,
+            style =
+                style.copy(
+                    color = textColor.copy(alpha = 0.98f),
+                    shadow =
+                        Shadow(
+                            color = textColor.copy(alpha = 0.48f),
+                            offset = Offset.Zero,
+                            blurRadius = 20f,
+                        ),
+                ),
+            maxLines = MaxSmoothInlineTextLines,
+            softWrap = true,
+            overflow = TextOverflow.Ellipsis,
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .drawWithContent {
+                        val layout = layoutResult ?: return@drawWithContent
+                        line.fillRects(layout, positionMs, fillLeadPx, sweepVerticalPaddingPx).forEach { rect ->
+                            clipRect(
+                                left = rect.left,
+                                top = rect.top,
+                                right = rect.right,
+                                bottom = rect.bottom,
+                            ) {
+                                this@drawWithContent.drawContent()
+                            }
+                        }
+                    },
         )
     }
 }
 
 private const val MaxSmoothInlineTextLines = 3
+private val InlineLyricFillLead = 12.dp
+private val InlineLyricSweepVerticalPadding = 3.dp
 
-private fun InlineKaraokeLine.smoothInlineLyricsText(
+private data class InlineSweepRect(
+    val left: Float,
+    val top: Float,
+    val right: Float,
+    val bottom: Float,
+)
+
+private fun InlineKaraokeLine.fillRects(
+    layout: TextLayoutResult,
     positionMs: Long,
-    textColor: Color,
-) = buildAnnotatedString {
+    fillLeadPx: Float,
+    verticalPaddingPx: Float,
+): List<InlineSweepRect> {
+    if (text.isEmpty() || layout.lineCount == 0) return emptyList()
+
+    val textOffset = sweepTextOffset(positionMs).coerceIn(0f, text.length.toFloat())
+    val charOffset = textOffset.toInt().coerceIn(0, text.lastIndex)
+    val lineIndex = layout.getLineForOffset(charOffset).coerceIn(0, layout.lineCount - 1)
+    val lineProgress = layout.lineProgressForOffset(lineIndex, textOffset)
+
+    return buildList {
+        for (index in 0 until lineIndex) {
+            add(layout.fillRectForLine(index, progress = 1f, fillLeadPx = 0f, verticalPaddingPx = verticalPaddingPx))
+        }
+        add(layout.fillRectForLine(lineIndex, lineProgress, fillLeadPx, verticalPaddingPx))
+    }
+}
+
+private fun InlineKaraokeLine.sweepTextOffset(positionMs: Long): Float {
+    val firstSegment = segments.firstOrNull() ?: return 0f
+    if (positionMs <= firstSegment.startMs) return 0f
+
     segments.forEach { segment ->
-        val segmentText = text.substring(segment.startIndex, segment.endIndex)
-        val isActive = positionMs in segment.startMs..segment.endMs
-        val hasPassed = positionMs > segment.endMs
-        val progress =
-            if (isActive) {
+        if (positionMs <= segment.endMs) {
+            val progress =
                 ((positionMs - segment.startMs).toFloat() / (segment.endMs - segment.startMs).coerceAtLeast(1))
                     .coerceIn(0f, 1f)
-            } else {
-                0f
-            }
-        val easedProgress = progress * progress * (3f - 2f * progress)
-        val color =
-            when {
-                hasPassed -> textColor.copy(alpha = 0.96f)
-                isActive -> textColor.copy(alpha = 0.70f + (0.26f * easedProgress))
-                else -> textColor.copy(alpha = 0.34f)
-            }
-        val shadow =
-            when {
-                isActive -> {
-                    Shadow(
-                        color = textColor.copy(alpha = 0.26f + (0.28f * easedProgress)),
-                        offset = Offset.Zero,
-                        blurRadius = 12f + (12f * easedProgress),
-                    )
-                }
-
-                hasPassed -> {
-                    Shadow(
-                        color = textColor.copy(alpha = 0.14f),
-                        offset = Offset.Zero,
-                        blurRadius = 7f,
-                    )
-                }
-
-                else -> null
-            }
-
-        withStyle(
-            SpanStyle(
-                color = color,
-                fontWeight = if (isActive) FontWeight.Black else FontWeight.ExtraBold,
-                shadow = shadow,
-            ),
-        ) {
-            append(segmentText)
+            val easedProgress = progress * progress * (3f - 2f * progress)
+            return segment.startIndex + ((segment.endIndex - segment.startIndex) * easedProgress)
         }
     }
+
+    return text.length.toFloat()
+}
+
+private fun TextLayoutResult.lineProgressForOffset(
+    lineIndex: Int,
+    textOffset: Float,
+): Float {
+    val lineStart = getLineStart(lineIndex).toFloat()
+    val lineEnd = getLineEnd(lineIndex, visibleEnd = false).coerceAtLeast(getLineStart(lineIndex) + 1).toFloat()
+    return ((textOffset - lineStart) / (lineEnd - lineStart)).coerceIn(0f, 1f)
+}
+
+private fun TextLayoutResult.fillRectForLine(
+    lineIndex: Int,
+    progress: Float,
+    fillLeadPx: Float,
+    verticalPaddingPx: Float,
+): InlineSweepRect {
+    val lineLeft = getLineLeft(lineIndex)
+    val lineRight = getLineRight(lineIndex).coerceAtLeast(lineLeft + 1f)
+    val fillRight =
+        if (progress <= 0f) {
+            lineLeft
+        } else {
+            (lineLeft + ((lineRight - lineLeft) * progress.coerceIn(0f, 1f)) + fillLeadPx)
+                .coerceAtMost(lineRight)
+        }
+    return InlineSweepRect(
+        left = lineLeft,
+        top = getLineTop(lineIndex) - verticalPaddingPx,
+        right = fillRight,
+        bottom = getLineBottom(lineIndex) + verticalPaddingPx,
+    )
 }
 
 private fun LyricsEntry.inlineLyricsText(
@@ -464,7 +550,7 @@ private fun LyricsEntry.inlineLyricsText(
         withStyle(SpanStyle(color = wordColor, fontWeight = wordWeight, shadow = wordShadow)) {
             append(word.text)
         }
-        if (word.hasTrailingSpace && index < timedWords.lastIndex) {
+        if (timedWords.shouldInsertInlineSpaceAfter(index)) {
             append(" ")
         }
     }

@@ -41,7 +41,6 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import okhttp3.Credentials
 import timber.log.Timber
@@ -81,6 +80,11 @@ class App :
         CipherDeobfuscator.initialize(this)
 
         Timber.plant(Timber.DebugTree())
+
+        // Pre-read Coil cache size on background to avoid runBlocking in newImageLoader
+        applicationScope.launch(Dispatchers.IO) {
+            cachedCoilCacheSize = dataStore.data.map { it[MaxImageCacheSizeKey] ?: 512 }.first()
+        }
 
         // تهيئة إعدادات التطبيق عند الإقلاع
         applicationScope.launch {
@@ -250,11 +254,11 @@ class App :
         }
     }
 
+    @Volatile
+    private var cachedCoilCacheSize: Int? = null
+
     override fun newImageLoader(context: PlatformContext): ImageLoader {
-        val cacheSize =
-            runBlocking {
-                dataStore.data.map { it[MaxImageCacheSizeKey] ?: 512 }.first()
-            }
+        val cacheSize = cachedCoilCacheSize ?: DEFAULT_COIL_CACHE_SIZE_MB
         return ImageLoader
             .Builder(this)
             .apply {
@@ -264,7 +268,7 @@ class App :
                 memoryCache {
                     MemoryCache
                         .Builder()
-                        .maxSizePercent(context, 0.25)
+                        .maxSizePercent(context, 0.15)
                         .build()
                 }
                 if (cacheSize == 0) {
@@ -284,6 +288,8 @@ class App :
     }
 
     companion object {
+        private const val DEFAULT_COIL_CACHE_SIZE_MB = 512
+
         suspend fun forgetAccount(context: Context) {
             Timber.d("forgetAccount: Starting logout process")
 
