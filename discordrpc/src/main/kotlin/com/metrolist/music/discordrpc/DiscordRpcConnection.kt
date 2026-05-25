@@ -7,7 +7,6 @@ import com.metrolist.music.discordrpc.entities.Metadata
 import com.metrolist.music.discordrpc.entities.Timestamps
 import com.metrolist.music.discordrpc.entities.Presence
 import io.ktor.client.HttpClient
-import io.ktor.client.call.body
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.statement.bodyAsText
@@ -32,8 +31,6 @@ class DiscordRpcConnection(
 ) {
     private val tag = "DiscordRpc"
     private val gateway = GatewayWebSocket(token, os, browser, device)
-    private val httpClient = HttpClient()
-
     fun isRunning(): Boolean = gateway.isSessionEstablished()
 
     fun connect() {
@@ -63,6 +60,7 @@ class DiscordRpcConnection(
             gateway.connect()
         }
 
+        val resolvedApplicationId = applicationId ?: APPLICATION_ID
         val resolvedLargeImage = largeImage?.let {
             Timber.tag(tag).v("Resolving large image: $it")
             resolveImage(it).also { result ->
@@ -86,7 +84,7 @@ class DiscordRpcConnection(
                     Activity(
                         name = name ?: "Metrolist",
                         type = type.value,
-                        applicationId = applicationId,
+                        applicationId = resolvedApplicationId,
                         state = state,
                         details = details,
                         timestamps = timestamps,
@@ -121,42 +119,23 @@ class DiscordRpcConnection(
         Timber.tag(tag).i("close() called")
         clearActivity()
         gateway.close()
-        httpClient.close()
     }
 
     fun closeDirect() {
         Timber.tag(tag).i("closeDirect() called")
         gateway.close()
-        httpClient.close()
     }
 
-    private suspend fun resolveImage(image: String): String? {
+    private fun resolveImage(image: String): String? {
         val normalizedImage = image.trim()
         if (normalizedImage.isBlank()) return null
 
-        return if (normalizedImage.startsWith("mp:") || normalizedImage.startsWith("http", ignoreCase = true)) {
-            ArtworkCache.getOrFetch(normalizedImage) {
-                if (normalizedImage.startsWith("mp:")) {
-                    Timber.tag(tag).d("Image already mp: $normalizedImage")
-                    normalizedImage
-                } else {
-                    Timber.tag(tag).d("Fetching external asset for: $normalizedImage")
-                    val asset = fetchExternalAsset(
-                        client = httpClient,
-                        applicationId = APPLICATION_ID,
-                        token = token,
-                        imageUrl = normalizedImage,
-                        userAgent = userAgent,
-                        superPropertiesBase64 = superPropertiesBase64,
-                    )
-                    if (asset != null) {
-                        Timber.tag(tag).i("External asset uploaded: $normalizedImage -> $asset")
-                    } else {
-                        Timber.tag(tag).w("External asset upload failed for: $normalizedImage, omitting image until retry")
-                    }
-                    asset
-                }
-            }
+        return if (normalizedImage.startsWith("mp:")) {
+            Timber.tag(tag).d("Image already mp: $normalizedImage")
+            normalizedImage
+        } else if (normalizedImage.startsWith("http", ignoreCase = true)) {
+            Timber.tag(tag).d("Using external image URL directly: $normalizedImage")
+            normalizedImage
         } else {
             "mp:$normalizedImage"
         }
@@ -182,7 +161,7 @@ class DiscordRpcConnection(
                     }
                 }
                 val text = response.bodyAsText()
-                val json = org.json.JSONObject(text)
+                val json = JSONObject(text)
                 val id = json.getString("id")
                 val username = json.getString("username")
                 val name = json.optString("global_name", username)

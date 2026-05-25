@@ -24,6 +24,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.time.LocalDateTime
 import javax.inject.Inject
@@ -45,28 +46,49 @@ class CachePlaylistViewModel
                 while (true) {
                     val hideExplicit = context.dataStore.get(HideExplicitKey, false)
                     val hideVideoSongs = context.dataStore.get(HideVideoSongsKey, false)
-                    val cachedIds = playerCache.keys.toSet()
-                    val downloadedIds = downloadCache.keys.toSet()
-                    val pureCacheIds = cachedIds.subtract(downloadedIds)
+                    val playerCacheKeys = playerCache.keys.toSet()
+                    val downloadCacheKeys = downloadCache.keys.toSet()
+                    val downloadedIds =
+                        database
+                            .downloadedSongsByNameAsc()
+                            .first()
+                            .mapTo(mutableSetOf()) { it.id }
+                    val cacheKeysBySongId =
+                        (playerCacheKeys + downloadCacheKeys)
+                            .mapNotNull { key -> key.cacheMediaIdOrNull()?.let { mediaId -> mediaId to key } }
+                            .filterNot { (mediaId, _) -> mediaId in downloadedIds }
+                            .groupBy(
+                                keySelector = { it.first },
+                                valueTransform = { it.second },
+                            )
 
                     val songs =
-                        if (pureCacheIds.isNotEmpty()) {
-                            database.getSongsByIds(pureCacheIds.toList())
+                        if (cacheKeysBySongId.isNotEmpty()) {
+                            database.getSongsByIds(cacheKeysBySongId.keys.toList())
                         } else {
                             emptyList()
                         }
 
                     val completeSongs =
-                        songs.filter {
-                            val contentLength = it.format?.contentLength
-                            contentLength != null && playerCache.isCached(it.song.id, 0, contentLength)
+                        songs.filter { song ->
+                            val candidateKeys = cacheKeysBySongId[song.id].orEmpty() + song.id
+                            candidateKeys.any { key ->
+                                playerCache.hasUsableCacheFor(key, song.format?.contentLength) ||
+                                    downloadCache.hasUsableCacheFor(key, song.format?.contentLength)
+                            }
                         }
 
                     if (completeSongs.isNotEmpty()) {
+                        val now = LocalDateTime.now()
                         database.query {
                             completeSongs.forEach {
-                                if (it.song.dateDownload == null) {
-                                    update(it.song.copy(dateDownload = LocalDateTime.now()))
+                                if (it.song.dateDownload == null || !it.song.isCached) {
+                                    update(
+                                        it.song.copy(
+                                            dateDownload = it.song.dateDownload ?: now,
+                                            isCached = true,
+                                        )
+                                    )
                                 }
                             }
                         }
@@ -74,8 +96,7 @@ class CachePlaylistViewModel
 
                     _cachedSongs.value =
                         completeSongs
-                            .filter { it.song.dateDownload != null }
-                            .sortedByDescending { it.song.dateDownload }
+                            .sortedByDescending { it.song.dateDownload ?: LocalDateTime.MIN }
                             .filterExplicit(hideExplicit)
                             .filterVideoSongs(hideVideoSongs)
 
@@ -85,6 +106,65 @@ class CachePlaylistViewModel
         }
 
         fun removeSongFromCache(songId: String) {
-            playerCache.removeResource(songId)
+            val keys =
+                (playerCache.keys + downloadCache.keys)
+                    .filter { it.cacheMediaIdOrNull() == songId }
+                    .toSet() + songId
+            keys.forEach { key ->
+                playerCache.removeResource(key)
+                downloadCache.removeResource(key)
+            }
+            viewModelScope.launch {
+                database.getSongById(songId)?.song?.let { song ->
+                    database.query {
+                        update(song.copy(isCached = false))
+                    }
+                }
+            }
+        }
+
+        private fun SimpleCache.hasUsableCacheFor(
+            key: String,
+            contentLength: Long?,
+        ): Boolean {
+            val length = contentLength?.takeIf { it > 0L }
+            if (length != null && runCatching { isCached(key, 0L, length) }.getOrDefault(false)) {
+                return true
+            }
+            return runCatching {
+                getCachedSpans(key).any { span ->
+                    span.isCached && span.length > 0L && span.file?.exists() == true
+                }
+            }.getOrDefault(false)
+        }
+
+        private fun String.cacheMediaIdOrNull(): String? {
+            val stripped =
+                CACHE_KEY_PREFIXES.fold(trim()) { value, prefix ->
+                    value.removePrefix(prefix)
+                }
+            return stripped
+                .takeIf { it.isNotBlank() }
+                ?.takeUnless { it.startsWith("http://", ignoreCase = true) }
+                ?.takeUnless { it.startsWith("https://", ignoreCase = true) }
+                ?.takeUnless { it.startsWith("file:", ignoreCase = true) }
+        }
+
+        private companion object {
+            private val CACHE_KEY_PREFIXES =
+                listOf(
+                    "apple-wrapper-alac-v3:",
+                    "apple-wrapper-alac-v2:",
+                    "apple-wrapper-alac:",
+                    "qobuz-fallback-v2:",
+                    "qobuz-fallback:",
+                    "tidal-flac-fallback-temp-v1:",
+                    "tidal-flac-fallback:",
+                    "deezer-fallback-audio:",
+                    "soundcloud-fallback-mp3:",
+                    "instagram-fallback-audio:",
+                    "direct-http-audio:",
+                    "youtube-fallback-aac:",
+                )
         }
     }

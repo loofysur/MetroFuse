@@ -138,6 +138,7 @@ import com.metrolist.music.constants.DiscordButton1TextKey
 import com.metrolist.music.constants.DiscordButton1VisibleKey
 import com.metrolist.music.constants.DiscordButton2TextKey
 import com.metrolist.music.constants.DiscordButton2VisibleKey
+import com.metrolist.music.constants.DiscordShowProviderKey
 import com.metrolist.music.constants.DiscordStatusKey
 import com.metrolist.music.constants.DiscordTokenKey
 import com.metrolist.music.constants.DiscordUseDetailsKey
@@ -1019,7 +1020,18 @@ class MusicService :
 
         currentFormat.collect(scope) { format ->
             val mediaId = currentMediaMetadata.value?.id ?: player.currentMediaItem?.mediaId
-            currentPlaybackFormat.value = format?.takeIf { mediaId == null || it.id == mediaId }
+            val playbackFormat = format?.takeIf { mediaId == null || it.id == mediaId }
+            currentPlaybackFormat.value = playbackFormat
+            if (
+                playbackFormat != null &&
+                discordRpc != null &&
+                player.playbackState == Player.STATE_READY &&
+                player.isPlaying
+            ) {
+                currentSong.value
+                    ?.takeIf { song -> mediaId == null || song.song.id == mediaId }
+                    ?.let { song -> updateDiscordRPC(song) }
+            }
         }
 
         combine(
@@ -1119,6 +1131,7 @@ class MusicService :
             .map {
                 listOf(
                     it[DiscordUseDetailsKey],
+                    it[DiscordShowProviderKey],
                     it[DiscordAdvancedModeKey],
                     it[DiscordStatusKey],
                     it[DiscordButton1TextKey],
@@ -3949,6 +3962,7 @@ class MusicService :
         showFeedback: Boolean = false,
     ) {
         val useDetails = dataStore.get(DiscordUseDetailsKey, false)
+        val showProvider = dataStore.get(DiscordShowProviderKey, true)
         val advancedMode = dataStore.get(DiscordAdvancedModeKey, false)
 
         val status = if (advancedMode) dataStore.get(DiscordStatusKey, "online") else "online"
@@ -3959,6 +3973,7 @@ class MusicService :
         val activityType = if (advancedMode) dataStore.get(DiscordActivityTypeKey, "listening") else "listening"
         val activityName = if (advancedMode) dataStore.get(DiscordActivityNameKey, "") else ""
         val mediaId = song.song.id
+        val audioProvider = currentDiscordRpcAudioProviderLabel(mediaId).takeIf { showProvider }
         val updateGeneration = discordUpdateGeneration.incrementAndGet()
 
         discordUpdateJob?.cancel()
@@ -3981,6 +3996,7 @@ class MusicService :
                         activityType,
                         activityName,
                         currentPreferredArtworkUrl.value,
+                        audioProvider,
                     )?.onFailure {
                         if (showFeedback) {
                             Handler(Looper.getMainLooper()).post {
@@ -3994,6 +4010,42 @@ class MusicService :
                         }
                     }
             }
+    }
+
+    private fun currentDiscordRpcAudioProviderLabel(mediaId: String): String? {
+        val format =
+            currentPlaybackFormat.value?.takeIf { it.id == mediaId }
+                ?: songUrlCache[mediaId]?.format
+        return format?.discordRpcAudioProviderLabel()
+            ?: player.currentMediaItem?.localConfiguration?.uri?.discordRpcAudioProviderLabel()
+    }
+
+    private fun FormatEntity.discordRpcAudioProviderLabel(): String? =
+        when (itag) {
+            APPLE_MUSIC_WRAPPER_ITAG -> "apple music"
+            QOBUZ_FALLBACK_ITAG -> "qobuz"
+            TIDAL_FALLBACK_ITAG -> "tidal"
+            DEEZER_FALLBACK_ITAG -> "deezer"
+            SOUNDCLOUD_FALLBACK_ITAG -> "soundcloud"
+            INSTAGRAM_FALLBACK_ITAG -> "instagram"
+            DIRECT_HTTP_AUDIO_ITAG -> "direct audio"
+            else -> "youtube music".takeIf { itag > 0 }
+        }
+
+    private fun Uri.discordRpcAudioProviderLabel(): String? {
+        val value = toString()
+        return when {
+            AppleMusicWrapperDataSource.isAppleUri(this) -> "apple music"
+            value.startsWith(appleWrapperCacheKey(""), ignoreCase = true) -> "apple music"
+            value.startsWith(qobuzFallbackCacheKey(""), ignoreCase = true) -> "qobuz"
+            value.startsWith(tidalFallbackCacheKey(""), ignoreCase = true) -> "tidal"
+            value.startsWith(deezerFallbackCacheKey(""), ignoreCase = true) -> "deezer"
+            value.startsWith(soundCloudFallbackCacheKey(""), ignoreCase = true) -> "soundcloud"
+            value.startsWith(instagramFallbackCacheKey(""), ignoreCase = true) -> "instagram"
+            value.startsWith(directHttpAudioCacheKey(""), ignoreCase = true) -> "direct audio"
+            value.startsWith(youtubeFallbackCacheKey(""), ignoreCase = true) -> "youtube music"
+            else -> null
+        }
     }
 
     private fun upsertAppleWrapperFormat(mediaId: String) {

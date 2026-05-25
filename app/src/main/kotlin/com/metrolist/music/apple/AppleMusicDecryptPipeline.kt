@@ -206,7 +206,7 @@ object AppleMusicDecryptPipeline {
             resolveToMediaPlaylist(client, m3u8Url)
         }
         val mediaPlaylist = trace.measure("media_playlist_parse") {
-            parseMediaPlaylist(mediaDocument.url, mediaDocument.text)
+            parseMediaPlaylist(mediaDocument.url, mediaDocument.text, mediaDocument.qualityInfo)
         }
         trace.mark("duration_known", mediaPlaylist.durationMs ?: durationMs)
         val segmentLengths = trace.measure("seek_segment_lengths") {
@@ -216,13 +216,18 @@ object AppleMusicDecryptPipeline {
                 trace.mark("seek_segment_lengths_unavailable")
             }
         }
-        val averageBitrate = estimateAverageBandwidth(mediaPlaylist, segmentLengths)
         val rawInitBytes = trace.measure("init_segment_fetch") {
             downloadBytes(client, mediaPlaylist.init.url, mediaPlaylist.init.range)
         }
-        readInitSegmentQuality(rawInitBytes)?.let { quality ->
+        val initQuality = readInitSegmentQuality(rawInitBytes)
+        initQuality?.let { quality ->
             trace.mark("format_known", quality.toTraceValue())
         }
+        val realQuality = mediaPlaylist.qualityInfo.mergedWith(initQuality)
+        val averageBitrate =
+            realQuality
+                ?.bandwidth
+                ?.takeIf { isPlausibleAlacBandwidth(it, realQuality.sampleRate) }
         val alacRepairParams = readAlacRepairParams(rawInitBytes)
             ?.also { trace.mark("alac_repair_ready", "sampleSize=${it.sampleSize} channels=${it.channels}") }
         val patchedInitBytes = patchInitSegment(
@@ -298,22 +303,13 @@ object AppleMusicDecryptPipeline {
         repeat(4) {
             if (!currentText.isMasterPlaylist()) {
                 val mediaQuality = runCatching {
-                    val mediaPlaylist = parseMediaPlaylist(currentUrl, currentText)
+                    val mediaPlaylist = parseMediaPlaylist(currentUrl, currentText, qualityInfo)
                     val initQuality = runCatching {
                         readInitSegmentQuality(
                             downloadBytes(client, mediaPlaylist.init.url, mediaPlaylist.init.range)
                         )
                     }.getOrNull()
-                    val bandwidth = if (preferFast) {
-                        null
-                    } else {
-                        estimateAverageBandwidth(
-                            client = client,
-                            playlist = mediaPlaylist,
-                            maxRemoteSegments = 4
-                        )
-                    }
-                    AlacQualityInfo(bandwidth = bandwidth).mergedWith(initQuality)
+                    mediaPlaylist.qualityInfo.mergedWith(initQuality)
                 }.getOrNull()
                 return qualityInfo.mergedWith(mediaQuality)
             }
@@ -880,16 +876,23 @@ object AppleMusicDecryptPipeline {
         private val mediaDocument = trace.measure("virtual_media_playlist_fetch") {
             resolveToMediaPlaylist(client, request.m3u8Url)
         }
-        private val playlist = parseMediaPlaylist(mediaDocument.url, mediaDocument.text)
+        private val playlist = parseMediaPlaylist(mediaDocument.url, mediaDocument.text, mediaDocument.qualityInfo)
         private val rawInitBytes = trace.measure("virtual_init_fetch") {
             downloadBytes(client, playlist.init.url, playlist.init.range)
         }
+        private val initQuality = readInitSegmentQuality(rawInitBytes)
+            ?.also { trace.mark("virtual_format_known", it.toTraceValue()) }
+        private val realQuality = playlist.qualityInfo.mergedWith(initQuality)
+        private val realAverageBitrate =
+            realQuality
+                ?.bandwidth
+                ?.takeIf { isPlausibleAlacBandwidth(it, realQuality.sampleRate) }
         private val alacRepairParams = readAlacRepairParams(rawInitBytes)
             ?.also { trace.mark("virtual_alac_repair_ready", "sampleSize=${it.sampleSize} channels=${it.channels}") }
         private val initBytes = patchInitSegment(
             initBytes = rawInitBytes,
             durationMs = request.durationMs?.takeIf { it > 0L } ?: playlist.durationMs,
-            averageBitrate = estimateAverageBandwidth(playlist, null),
+            averageBitrate = realAverageBitrate,
         )
         private val decryptClient = AppleMusicWrapperManagerProvider.openSampleDecryptClient(
             host = request.host,
@@ -945,9 +948,7 @@ object AppleMusicDecryptPipeline {
         }
 
         private fun masterPlaylistBytes(): ByteArray {
-            val bandwidth = estimateAverageBandwidth(playlist, null)
-                ?.takeIf { isPlausibleAlacBandwidth(it, null) }
-                ?: DEFAULT_ALAC_MASTER_BANDWIDTH
+            val bandwidth = realAverageBitrate ?: LEGACY_ALAC_PLACEHOLDER_BANDWIDTH
             return buildString {
                 appendLine("#EXTM3U")
                 appendLine("#EXT-X-VERSION:7")
@@ -1252,15 +1253,17 @@ object AppleMusicDecryptPipeline {
     private fun resolveToMediaPlaylist(client: OkHttpClient, initialUrl: String): PlaylistDocument {
         var currentUrl = initialUrl
         var currentText = downloadText(client, currentUrl)
+        var qualityInfo: AlacQualityInfo? = null
         repeat(4) {
             if (!currentText.isMasterPlaylist()) {
-                return PlaylistDocument(currentUrl, currentText)
+                return PlaylistDocument(currentUrl, currentText, qualityInfo)
             }
-            val childUrl = selectAlacChildPlaylist(currentUrl, currentText)?.url
+            val child = selectAlacChildPlaylist(currentUrl, currentText)
                 ?: throw AppleMusicWrapperManagerProvider.WrapperManagerException(
                     "wrapper-manager M3U8 did not expose an ALAC media playlist"
                 )
-            currentUrl = childUrl
+            qualityInfo = qualityInfo.mergedWith(child.qualityInfo)
+            currentUrl = child.url
             currentText = downloadText(client, currentUrl)
         }
         throw AppleMusicWrapperManagerProvider.WrapperManagerException(
@@ -1332,7 +1335,11 @@ object AppleMusicDecryptPipeline {
         return null
     }
 
-    private fun parseMediaPlaylist(baseUrl: String, playlist: String): MediaPlaylist {
+    private fun parseMediaPlaylist(
+        baseUrl: String,
+        playlist: String,
+        qualityInfo: AlacQualityInfo? = null,
+    ): MediaPlaylist {
         val keyRing = mutableListOf(PREFETCH_KEY)
         val segments = mutableListOf<MediaSegment>()
         val nextOffsetByUrl = mutableMapOf<String, Long>()
@@ -1410,7 +1417,8 @@ object AppleMusicDecryptPipeline {
             init = map,
             segments = segments,
             keyRing = keyRing.distinct(),
-            durationMs = totalDurationMs.takeIf { sawExtinf && it > 0L }
+            durationMs = totalDurationMs.takeIf { sawExtinf && it > 0L },
+            qualityInfo = qualityInfo,
         )
     }
 
@@ -3092,6 +3100,7 @@ object AppleMusicDecryptPipeline {
     private data class PlaylistDocument(
         val url: String,
         val text: String,
+        val qualityInfo: AlacQualityInfo?,
     )
 
     private data class PlaylistSelection(
@@ -3131,7 +3140,6 @@ object AppleMusicDecryptPipeline {
         }
     }
 
-    private const val DEFAULT_ALAC_MASTER_BANDWIDTH = 1_200_000L
     private const val LEGACY_ALAC_PLACEHOLDER_BANDWIDTH = 4_000_000L
 
     private data class MediaPlaylist(
@@ -3139,6 +3147,7 @@ object AppleMusicDecryptPipeline {
         val segments: List<MediaSegment>,
         val keyRing: List<String>,
         val durationMs: Long?,
+        val qualityInfo: AlacQualityInfo?,
     )
 
     private data class InitSegment(

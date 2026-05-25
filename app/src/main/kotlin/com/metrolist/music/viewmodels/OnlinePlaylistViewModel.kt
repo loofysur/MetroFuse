@@ -447,7 +447,15 @@ class OnlinePlaylistViewModel @Inject constructor(
                             ?.toIntOrNull()
                             ?.takeIf { offset -> offset > currentToken.offset }
                             ?.let { offset -> currentToken.copy(offset = offset) }
-                    val freshSongs = page.songs.filter { song -> seenSongIds.add(song.id) }
+                    val preservesDuplicateRows =
+                        currentToken.provider == "spotify" &&
+                            currentToken.type in setOf("playlist", "mix")
+                    val freshSongs =
+                        if (preservesDuplicateRows) {
+                            page.songs
+                        } else {
+                            page.songs.filter { song -> seenSongIds.add(song.id) }
+                        }
                     selectedResult = Triple(page, freshSongs, nextContinuation)
                     cursor =
                         if (freshSongs.isEmpty() && nextContinuation != null) {
@@ -486,9 +494,12 @@ class OnlinePlaylistViewModel @Inject constructor(
 
     private fun applySongFilters(songs: List<SongItem>): List<SongItem> {
         val hideVideoSongs = context.dataStore.get(HideVideoSongsKey, false)
-        return songs
-            .distinctBy { it.id }
-            .filterVideoSongs(hideVideoSongs)
+        val filteredSongs = songs.filterVideoSongs(hideVideoSongs)
+        return if (isExternalPlaylist) {
+            filteredSongs
+        } else {
+            filteredSongs.distinctBy { it.id }
+        }
     }
 
     override fun onCleared() {

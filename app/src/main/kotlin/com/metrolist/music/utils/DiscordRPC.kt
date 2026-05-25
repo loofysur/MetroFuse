@@ -13,6 +13,7 @@ import com.metrolist.music.discordrpc.DiscordRpcConnection
 import com.metrolist.music.discordrpc.SuperProperties
 import com.metrolist.music.discordrpc.entities.Button
 import com.metrolist.music.discordrpc.entities.Timestamps
+import java.util.Locale
 
 class DiscordRPC(
     val context: Context,
@@ -50,6 +51,7 @@ class DiscordRPC(
         activityType: String = "listening",
         activityName: String = "",
         artworkUrl: String? = null,
+        audioProvider: String? = null,
     ) = runCatching {
         val currentTime = System.currentTimeMillis()
 
@@ -88,9 +90,17 @@ class DiscordRPC(
             else -> ActivityType.LISTENING
         }
 
-        val name = activityName.ifEmpty {
+        val baseName = activityName.ifEmpty {
             context.getString(R.string.app_name).removeSuffix(" Debug")
         }
+        val providerSuffix =
+            audioProvider
+                ?.trim()
+                ?.takeIf { it.isNotBlank() }
+                ?.lowercase(Locale.US)
+                ?.let { " [$it]" }
+                .orEmpty()
+        val name = "$baseName$providerSuffix"
         val largeImageUrl =
             listOf(
                 artworkUrl,
@@ -129,19 +139,25 @@ class DiscordRPC(
             if (!value.startsWith("http", ignoreCase = true) && !value.startsWith("mp:", ignoreCase = true)) {
                 return null
             }
+            val secureValue =
+                if (value.startsWith("http://", ignoreCase = true)) {
+                    "https://" + value.substringAfter("://")
+                } else {
+                    value
+                }
             if (!value.contains("googleusercontent.com", ignoreCase = true) &&
                 !value.contains("ggpht.com", ignoreCase = true)
             ) {
-                return value
+                return secureValue
             }
             val base =
-                value
+                secureValue
                     .substringBefore("=w")
                     .substringBefore("=s")
             return when {
                 base.contains("googleusercontent.com", ignoreCase = true) -> "$base=w640-h640-p-l90-rj"
                 base.contains("ggpht.com", ignoreCase = true) -> "$base=s640"
-                else -> value
+                else -> secureValue
             }
         }
 

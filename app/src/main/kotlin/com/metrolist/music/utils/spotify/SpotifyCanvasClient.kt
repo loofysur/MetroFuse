@@ -257,7 +257,11 @@ object SpotifyCanvasClient {
     private const val SPOTIFY_HOME_GRAPHQL_SECTION_LIMIT = 20
     private const val SPOTIFY_HOME_GRAPHQL_HASH =
         "d62af2714f2623c923cc9eeca4b9545b4363abaa9188a9e94e2b63b823419a2c"
-    private const val GRAPH_PLAYLIST_PAGE_SIZE = 50
+    private const val GRAPH_PLAYLIST_PAGE_SIZE = 100
+    private const val SPOTIFY_FETCH_PLAYLIST_METADATA_HASH =
+        "a65e12194ed5fc443a1cdebed5fabe33ca5b07b987185d63c72483867ad13cb4"
+    private const val SPOTIFY_DECORATE_CONTEXT_TRACKS_HASH =
+        "383de00240775c39a6afe0b1055dc562b2a3930894201f9762f3fc32a74971c7"
     private const val LIBRARY_ITEM_PAGE_SIZE = 50
     private const val LIBRARY_ITEM_SAFETY_LIMIT = 1_000
     private const val SPOTIFY_LEGACY_SHOW_EPISODES_HASH =
@@ -1811,24 +1815,6 @@ object SpotifyCanvasClient {
         externalPlaylistCache.fresh(cacheKey)?.let { return it }
 
         runCatching {
-            resolvePlaylistFromWebApi(normalizedPlaylistId, normalizedCookie)
-        }.onFailure { error ->
-            Timber.w(error, "Spotify playlist Web API load failed for %s", normalizedPlaylistId)
-        }.getOrNull()
-            ?.let { page ->
-                if (page.isCompleteSpotifyPlaylistPage()) {
-                    externalPlaylistCache.putFresh(cacheKey, page)
-                    return page
-                }
-                Timber.w(
-                    "Spotify playlist Web API returned partial page %d/%s for %s; retrying GraphQL",
-                    page.songs.size,
-                    page.playlist.songCountText.spotifySongCount()?.toString() ?: "?",
-                    normalizedPlaylistId,
-                )
-            }
-
-        runCatching {
             resolvePlaylistFromGraphQl(normalizedPlaylistId, normalizedCookie)
         }.onFailure { error ->
             Timber.w(error, "Spotify playlist GraphQL load failed for %s", normalizedPlaylistId)
@@ -1841,9 +1827,28 @@ object SpotifyCanvasClient {
                 }
 
                 Timber.w(
-                    "Spotify playlist GraphQL returned suspicious partial page %d/%d for %s; retrying web page",
+                    "Spotify playlist GraphQL returned suspicious partial page %d/%s for %s; retrying Web API",
                     page.songs.size,
-                    expectedSongs,
+                    expectedSongs?.toString() ?: "?",
+                    normalizedPlaylistId,
+                )
+            }
+
+        runCatching {
+            resolvePlaylistFromWebApi(normalizedPlaylistId, normalizedCookie)
+        }.onFailure { error ->
+            Timber.w(error, "Spotify playlist Web API load failed for %s", normalizedPlaylistId)
+        }.getOrNull()
+            ?.let { page ->
+                if (page.isCompleteSpotifyPlaylistPage()) {
+                    externalPlaylistCache.putFresh(cacheKey, page)
+                    return page
+                }
+
+                Timber.w(
+                    "Spotify playlist Web API returned partial page %d/%s for %s; retrying web page",
+                    page.songs.size,
+                    page.playlist.songCountText.spotifySongCount()?.toString() ?: "?",
                     normalizedPlaylistId,
                 )
             }
@@ -1859,7 +1864,7 @@ object SpotifyCanvasClient {
                 normalizedPlaylistId,
             )
         }
-        return page
+        return page.takeUnless { it.isSuspiciousThirtySongSpotifyPlaylistPage() }
     }
 
     suspend fun resolvePlaylistPage(
@@ -1871,27 +1876,27 @@ object SpotifyCanvasClient {
         val normalizedCookie = normalizeSpotifyCookieInput(cookie) ?: return null
         val normalizedPlaylistId = spotifyEntityId(playlistId, "playlist") ?: return null
         return runCatching {
-            resolvePlaylistPageFromWebApi(
+            resolvePlaylistPageFromGraphQl(
                 playlistId = normalizedPlaylistId,
                 normalizedCookie = normalizedCookie,
                 offset = offset.coerceAtLeast(0),
-                limit = limit.coerceIn(1, 50),
+                limit = limit.coerceIn(1, GRAPH_PLAYLIST_PAGE_SIZE),
             )
         }.onFailure { error ->
-            Timber.w(error, "Spotify playlist page load failed for %s at %d", normalizedPlaylistId, offset)
+            Timber.w(error, "Spotify playlist GraphQL page load failed for %s at %d", normalizedPlaylistId, offset)
         }.getOrNull()
-            ?.takeIf { it.songs.isNotEmpty() }
+            ?.takeIf { it.songs.isNotEmpty() && !it.isSuspiciousThirtySongSpotifyPlaylistPage() }
             ?: runCatching {
-                resolvePlaylistPageFromGraphQl(
+                resolvePlaylistPageFromWebApi(
                     playlistId = normalizedPlaylistId,
                     normalizedCookie = normalizedCookie,
                     offset = offset.coerceAtLeast(0),
-                    limit = limit.coerceIn(1, 50),
+                    limit = limit.coerceIn(1, GRAPH_PLAYLIST_PAGE_SIZE),
                 )
             }.onFailure { error ->
-                Timber.w(error, "Spotify playlist GraphQL page load failed for %s at %d", normalizedPlaylistId, offset)
+                Timber.w(error, "Spotify playlist page load failed for %s at %d", normalizedPlaylistId, offset)
             }.getOrNull()
-                ?.takeIf { it.songs.isNotEmpty() }
+                ?.takeIf { it.songs.isNotEmpty() && !it.isSuspiciousThirtySongSpotifyPlaylistPage() }
             ?: runCatching {
                 resolvePlaylistPageFromMobileApi(
                     playlistId = normalizedPlaylistId,
@@ -1902,7 +1907,7 @@ object SpotifyCanvasClient {
             }.onFailure { error ->
                 Timber.w(error, "Spotify playlist mobile page load failed for %s at %d", normalizedPlaylistId, offset)
             }.getOrNull()
-                ?.takeIf { it.songs.isNotEmpty() }
+                ?.takeIf { it.songs.isNotEmpty() && !it.isSuspiciousThirtySongSpotifyPlaylistPage() }
             ?: if (offset.coerceAtLeast(0) == 0) {
                 resolvePlaylist(normalizedPlaylistId, normalizedCookie)
             } else {
@@ -1947,32 +1952,17 @@ object SpotifyCanvasClient {
     ): ExternalPlaylistPage? {
         val playlistUri = "spotify:playlist:$playlistId"
         val root =
-            if (offset <= 0) {
-                postGraphQl<JsonObject>(
-                    operation = "fetchPlaylistWithGatedEntityRelations",
-                    variables = buildJsonObject { put("uri", playlistUri) },
-                    cookie = normalizedCookie,
-                    tokenProvider = tokenProvider,
-                )
-            } else {
-                postGraphQl<JsonObject>(
-                    operation = "fetchPlaylistContentsWithGatedEntityRelations",
-                    variables =
-                        buildJsonObject {
-                            put("uri", playlistUri)
-                            put("offset", offset)
-                            put("limit", limit)
-                        },
-                    cookie = normalizedCookie,
-                    tokenProvider = tokenProvider,
-                )
-            }
+            postPlaylistMetadataGraphQl(
+                playlistUri = playlistUri,
+                offset = offset.coerceAtLeast(0),
+                limit = limit.coerceIn(1, GRAPH_PLAYLIST_PAGE_SIZE),
+                cookie = normalizedCookie,
+                tokenProvider = tokenProvider,
+            )
 
         val playlist = root.obj("data")?.obj("playlistV2") ?: return null
         val content = playlist.obj("content")
-        val songs = mutableListOf<SongItem>()
-        appendSpotifyGraphPlaylistSongs(content, songs)
-        val distinctSongs = songs.distinctBy { it.id }
+        val trackPage = resolveSpotifyGraphPlaylistTrackPage(content, normalizedCookie, tokenProvider)
         val pagingInfo = content?.obj("pagingInfo")
         val pageOffset = pagingInfo?.long("offset")?.toInt() ?: offset
         val total =
@@ -1984,7 +1974,7 @@ object SpotifyCanvasClient {
                 ?: spotifyPagedNextOffset(
                     nextUrl = null,
                     pageOffset = pageOffset,
-                    itemCount = distinctSongs.size,
+                    itemCount = trackPage.rawItemCount,
                     total = total,
                 )
 
@@ -2002,13 +1992,13 @@ object SpotifyCanvasClient {
                                     ?: owner.string("displayName")
                                     ?: owner.string("username")
                             }?.let { Artist(name = it, id = null) },
-                    songCountText = (total ?: distinctSongs.size).takeIf { it > 0 }?.let { "$it songs" },
-                    thumbnail = playlist.spotifyInitialStateImageUrl() ?: distinctSongs.firstOrNull()?.thumbnail,
+                    songCountText = (total ?: trackPage.songs.size).takeIf { it > 0 }?.let { "$it songs" },
+                    thumbnail = playlist.spotifyInitialStateImageUrl() ?: trackPage.songs.firstOrNull()?.thumbnail,
                     playEndpoint = null,
                     shuffleEndpoint = null,
                     radioEndpoint = null,
                 ),
-            songs = distinctSongs,
+            songs = trackPage.songs,
             continuation = nextOffset?.toString(),
         )
     }
@@ -2033,15 +2023,9 @@ object SpotifyCanvasClient {
                     normalizedCookie = normalizedCookie,
                     operation = "Spotify mobile playlist tracks page",
                 )
-            val songs = page.spotifyMobilePlaylistTracks().distinctBy { it.id }
+            val songs = page.spotifyMobilePlaylistTracks()
             val total = page.spotifyMobilePlaylistTotal()
             val pageOffset = page.long("offset")?.toInt() ?: offset
-            val pageLimit =
-                page.long("limit")
-                    ?.toInt()
-                    ?.takeIf { it > 0 }
-                    ?: songs.size.takeIf { it > 0 }
-                    ?: limit
             val nextOffset =
                 spotifyPagedNextOffset(
                     nextUrl = null,
@@ -2078,6 +2062,11 @@ object SpotifyCanvasClient {
         }.onFailure { error ->
             Timber.w(error, "Spotify album Web API load failed for %s", normalizedAlbumId)
         }.getOrNull()
+            ?: runCatching {
+                resolveAlbumFromBatchWebApi(normalizedAlbumId, normalizedCookie)
+            }.onFailure { error ->
+                Timber.w(error, "Spotify album batch Web API load failed for %s", normalizedAlbumId)
+            }.getOrNull()
     }
 
     suspend fun resolveAlbumPage(
@@ -2117,6 +2106,11 @@ object SpotifyCanvasClient {
         }.onFailure { error ->
             Timber.w(error, "Spotify artist Web API load failed for %s", normalizedArtistId)
         }.getOrNull()
+            ?: runCatching {
+                resolveArtistFromBatchWebApi(normalizedArtistId, normalizedCookie)
+            }.onFailure { error ->
+                Timber.w(error, "Spotify artist batch Web API load failed for %s", normalizedArtistId)
+            }.getOrNull()
     }
 
     suspend fun resolveShowPage(
@@ -2826,32 +2820,21 @@ object SpotifyCanvasClient {
                         "https://api.spotify.com/v1/playlists/$playlistId/tracks"
                             .toHttpUrl()
                             .newBuilder()
-                            .addQueryParameter("market", "from_token")
                             .addQueryParameter("limit", limit.toString())
                             .addQueryParameter("offset", offset.toString())
-                            .addQueryParameter(
-                                "fields",
-                                "total,limit,offset,next,items(is_local,track(id,name,type,uri,duration_ms,explicit,external_ids(isrc),artists(id,name),album(id,name,images)))",
-                            ).build(),
+                            .build(),
                     normalizedCookie = normalizedCookie,
                     operation = "Spotify playlist tracks page",
                 )
             val total = page.long("total")?.toInt() ?: playlistRoot.obj("tracks")?.long("total")?.toInt()
             val pageOffset = page.long("offset")?.toInt() ?: offset
             val rawItems = page.array("items").orEmpty()
-            val pageLimit =
-                page.long("limit")
-                    ?.toInt()
-                    ?.takeIf { it > 0 }
-                    ?: rawItems.size.takeIf { it > 0 }
-                    ?: limit
             val songs =
                 rawItems
                     .mapNotNull { item ->
                         item.obj?.obj("track")
                             ?: item.obj?.obj("item")
                     }.mapNotNull { it.toSpotifyPlaylistSong() }
-                    .distinctBy { it.id }
             val hasMore =
                 page.string("next") != null ||
                     total?.let { expected -> expected > pageOffset + rawItems.size } == true
@@ -3053,6 +3036,102 @@ object SpotifyCanvasClient {
             )
         }
 
+    private suspend fun resolveAlbumFromBatchWebApi(
+        albumId: String,
+        normalizedCookie: String,
+    ): ExternalPlaylistPage =
+        withContext(Dispatchers.IO) {
+            val albumRoot =
+                spotifyApiGet(
+                    url =
+                        "https://api.spotify.com/v1/albums"
+                            .toHttpUrl()
+                            .newBuilder()
+                            .addQueryParameter("ids", albumId)
+                            .addQueryParameter("market", "from_token")
+                            .build(),
+                    normalizedCookie = normalizedCookie,
+                    operation = "Spotify album batch",
+                ).array("albums")
+                    .orEmpty()
+                    .firstNotNullOfOrNull { it.obj }
+                    ?: error("Spotify album batch returned no album")
+
+            val songs = mutableListOf<SongItem>()
+            val firstTrackPage = albumRoot.obj("tracks")
+            firstTrackPage
+                ?.array("items")
+                .orEmpty()
+                .mapNotNull { it.obj?.toSpotifyAlbumSong(albumRoot) }
+                .forEach(songs::add)
+
+            val totalTracks =
+                firstTrackPage?.long("total")?.toInt()
+                    ?: albumRoot.long("total_tracks")?.toInt()
+            var offset = songs.size
+
+            while (
+                totalTracks != null &&
+                offset < totalTracks &&
+                songs.size < PLAYLIST_TRACK_SAFETY_LIMIT
+            ) {
+                val page =
+                    spotifyApiGet(
+                        url =
+                            "https://api.spotify.com/v1/albums/$albumId/tracks"
+                                .toHttpUrl()
+                                .newBuilder()
+                                .addQueryParameter("market", "from_token")
+                                .addQueryParameter("limit", ALBUM_TRACK_PAGE_SIZE.toString())
+                                .addQueryParameter("offset", offset.toString())
+                                .build(),
+                        normalizedCookie = normalizedCookie,
+                        operation = "Spotify album batch tracks",
+                    )
+
+                val pageSongs =
+                    page
+                        .array("items")
+                        .orEmpty()
+                        .mapNotNull { it.obj?.toSpotifyAlbumSong(albumRoot) }
+
+                if (pageSongs.isEmpty()) break
+
+                songs += pageSongs
+                offset += pageSongs.size
+            }
+
+            val distinctSongs = songs.distinctBy { it.id }
+            val albumTitle = albumRoot.string("name") ?: "Spotify album"
+            val artists =
+                albumRoot
+                    .array("artists")
+                    .orEmpty()
+                    .mapNotNull { artist ->
+                        val obj = artist.obj ?: return@mapNotNull null
+                        val name = obj.string("name") ?: return@mapNotNull null
+                        Artist(
+                            name = name,
+                            id = obj.string("id")?.let { "spotify:artist:$it" },
+                        )
+                    }
+
+            ExternalPlaylistPage(
+                playlist =
+                    PlaylistItem(
+                        id = "spotify:album:$albumId",
+                        title = albumTitle,
+                        author = artists.joinToString(", ") { it.name }.takeIf { it.isNotBlank() }?.let { Artist(name = it, id = null) },
+                        songCountText = (totalTracks ?: distinctSongs.size).takeIf { it > 0 }?.let { "$it songs" },
+                        thumbnail = albumRoot.spotifyWebApiImageUrl() ?: distinctSongs.firstOrNull()?.thumbnail,
+                        playEndpoint = null,
+                        shuffleEndpoint = null,
+                        radioEndpoint = null,
+                    ),
+                songs = distinctSongs,
+            )
+        }
+
     private suspend fun resolveArtistFromWebApi(
         artistId: String,
         normalizedCookie: String,
@@ -3066,6 +3145,49 @@ object SpotifyCanvasClient {
                     normalizedCookie = normalizedCookie,
                     operation = "Spotify artist",
                 )
+            val artistName = artistRoot.string("name") ?: "Spotify artist"
+            val songs =
+                loadSpotifyArtistTracks(
+                    artistId = artistId,
+                    artistName = artistName,
+                    normalizedCookie = normalizedCookie,
+                )
+
+            ExternalPlaylistPage(
+                playlist =
+                    PlaylistItem(
+                        id = "spotify:artist:$artistId",
+                        title = artistName,
+                        author = Artist(name = "Spotify", id = null),
+                        songCountText = songs.takeIf { it.isNotEmpty() }?.let { "${it.size} top songs" },
+                        thumbnail = artistRoot.spotifyWebApiImageUrl() ?: songs.firstOrNull()?.thumbnail,
+                        playEndpoint = null,
+                        shuffleEndpoint = null,
+                        radioEndpoint = null,
+                    ),
+                songs = songs,
+            )
+        }
+
+    private suspend fun resolveArtistFromBatchWebApi(
+        artistId: String,
+        normalizedCookie: String,
+    ): ExternalPlaylistPage =
+        withContext(Dispatchers.IO) {
+            val artistRoot =
+                spotifyApiGet(
+                    url =
+                        "https://api.spotify.com/v1/artists"
+                            .toHttpUrl()
+                            .newBuilder()
+                            .addQueryParameter("ids", artistId)
+                            .build(),
+                    normalizedCookie = normalizedCookie,
+                    operation = "Spotify artist batch",
+                ).array("artists")
+                    .orEmpty()
+                    .firstNotNullOfOrNull { it.obj }
+                    ?: error("Spotify artist batch returned no artist")
             val artistName = artistRoot.string("name") ?: "Spotify artist"
             val songs =
                 loadSpotifyArtistTracks(
@@ -3170,12 +3292,10 @@ object SpotifyCanvasClient {
     ): ExternalPlaylistPage? {
         val playlistUri = "spotify:playlist:$playlistId"
         val root =
-            postGraphQl<JsonObject>(
-                operation = "fetchPlaylistWithGatedEntityRelations",
-                variables =
-                    buildJsonObject {
-                        put("uri", playlistUri)
-                    },
+            postPlaylistMetadataGraphQl(
+                playlistUri = playlistUri,
+                offset = 0,
+                limit = GRAPH_PLAYLIST_PAGE_SIZE,
                 cookie = normalizedCookie,
                 tokenProvider = tokenProvider,
             )
@@ -3183,36 +3303,41 @@ object SpotifyCanvasClient {
         val playlist = root.obj("data")?.obj("playlistV2") ?: return null
         val songs = mutableListOf<SongItem>()
         val content = playlist.obj("content")
-        appendSpotifyGraphPlaylistSongs(content, songs)
+        val firstTrackPage = resolveSpotifyGraphPlaylistTrackPage(content, normalizedCookie, tokenProvider)
+        songs += firstTrackPage.songs
 
         var totalCount =
             content?.spotifyGraphContentTotal()
                 ?: playlist.spotifyPlaylistTotal()
         val initialTotalCount = totalCount
+        val firstPagingInfo = content?.obj("pagingInfo")
+        val firstPageOffset = firstPagingInfo?.long("offset")?.toInt() ?: 0
         var nextOffset =
-            content?.obj("pagingInfo")?.long("nextOffset")?.toInt()
-                ?: songs.size.takeIf { it > 0 && (initialTotalCount == null || it < initialTotalCount) }
+            firstPagingInfo?.long("nextOffset")?.toInt()
+                ?.takeIf { it > firstPageOffset }
+                ?: spotifyPagedNextOffset(
+                    nextUrl = null,
+                    pageOffset = firstPageOffset,
+                    itemCount = firstTrackPage.rawItemCount,
+                    total = initialTotalCount,
+                )
 
         while (nextOffset != null && songs.size < PLAYLIST_TRACK_SAFETY_LIMIT) {
             val requestedOffset = nextOffset
             val page =
-                postGraphQl<JsonObject>(
-                    operation = "fetchPlaylistContentsWithGatedEntityRelations",
-                    variables =
-                        buildJsonObject {
-                            put("uri", playlistUri)
-                            put("offset", requestedOffset)
-                            put("limit", GRAPH_PLAYLIST_PAGE_SIZE)
-                        },
+                postPlaylistMetadataGraphQl(
+                    playlistUri = playlistUri,
+                    offset = requestedOffset,
+                    limit = GRAPH_PLAYLIST_PAGE_SIZE,
                     cookie = normalizedCookie,
                     tokenProvider = tokenProvider,
                 )
 
             val pageContent = page.obj("data")?.obj("playlistV2")?.obj("content") ?: break
-            val previousCount = songs.size
-            appendSpotifyGraphPlaylistSongs(pageContent, songs)
-            val addedCount = songs.size - previousCount
-            if (addedCount <= 0) break
+            val trackPage = resolveSpotifyGraphPlaylistTrackPage(pageContent, normalizedCookie, tokenProvider)
+            if (trackPage.rawItemCount <= 0) break
+            if (trackPage.songs.isEmpty() && trackPage.trackIds.isNotEmpty()) break
+            songs += trackPage.songs
 
             val pagingInfo = pageContent.obj("pagingInfo")
             val pageOffset = pagingInfo?.long("offset")?.toInt() ?: requestedOffset
@@ -3222,19 +3347,21 @@ object SpotifyCanvasClient {
             nextOffset =
                 candidateOffset
                     ?.takeIf { it > pageOffset }
-                    ?: (requestedOffset + addedCount).takeIf { fallbackOffset ->
-                        fallbackOffset > pageOffset &&
-                            (expectedTotal == null || songs.size < expectedTotal)
-                    }
+                    ?: spotifyPagedNextOffset(
+                        nextUrl = null,
+                        pageOffset = pageOffset,
+                        itemCount = trackPage.rawItemCount,
+                        total = expectedTotal,
+                    )
 
             if (totalCount != null && songs.size >= totalCount) {
                 break
             }
         }
 
-        val graphSongs = songs.distinctBy { it.id }
+        val graphSongs = songs.toList()
         val expectedTotal = totalCount
-        val distinctSongs =
+        val resolvedSongs =
             if (
                 expectedTotal != null &&
                 graphSongs.size < expectedTotal &&
@@ -3264,15 +3391,15 @@ object SpotifyCanvasClient {
                                     ?: owner.string("displayName")
                                     ?: owner.string("username")
                             }?.let { Artist(name = it, id = null) },
-                    songCountText = (totalCount ?: distinctSongs.size).takeIf { it > 0 }?.let { "$it songs" },
-                    thumbnail = playlist.spotifyInitialStateImageUrl() ?: distinctSongs.firstOrNull()?.thumbnail,
+                    songCountText = (totalCount ?: resolvedSongs.size).takeIf { it > 0 }?.let { "$it songs" },
+                    thumbnail = playlist.spotifyInitialStateImageUrl() ?: resolvedSongs.firstOrNull()?.thumbnail,
                     playEndpoint = null,
                     shuffleEndpoint = null,
                     radioEndpoint = null,
                 ),
-            songs = distinctSongs,
+            songs = resolvedSongs,
             continuation =
-                distinctSongs.size
+                resolvedSongs.size
                     .takeIf { count ->
                         count > 0 &&
                             count < PLAYLIST_TRACK_SAFETY_LIMIT &&
@@ -3285,10 +3412,17 @@ object SpotifyCanvasClient {
         if (songs.isEmpty()) return false
         val expectedSongs = playlist.songCountText.spotifySongCount()
         return when {
+            isSuspiciousThirtySongSpotifyPlaylistPage() -> false
             expectedSongs != null -> songs.size >= expectedSongs || songs.size >= PLAYLIST_TRACK_SAFETY_LIMIT
             songs.size <= SPOTIFY_SUSPICIOUS_PLAYLIST_PAGE_SIZE -> false
             else -> true
         }
+    }
+
+    private fun ExternalPlaylistPage.isSuspiciousThirtySongSpotifyPlaylistPage(): Boolean {
+        val expectedSongs = playlist.songCountText.spotifySongCount()
+        return songs.size == SPOTIFY_SUSPICIOUS_PLAYLIST_PAGE_SIZE &&
+            (expectedSongs == null || expectedSongs <= SPOTIFY_SUSPICIOUS_PLAYLIST_PAGE_SIZE)
     }
 
     private fun String?.spotifySongCount(): Int? {
@@ -3401,20 +3535,65 @@ object SpotifyCanvasClient {
         normalizedCookie: String,
     ): List<SongItem> =
         withContext(Dispatchers.IO) {
-            runCatching {
-                resolvePlaylistTracksFromSpotifyWebApi(playlistId, normalizedCookie)
-            }.onFailure { error ->
-                Timber.w(error, "Spotify playlist Web API tracks failed for %s; retrying mobile API", playlistId)
-            }.getOrNull()
-                ?.takeIf { it.isNotEmpty() }
-                ?.let { return@withContext it }
-
-            resolvePlaylistTracksFromSpotifyMobileApi(playlistId, normalizedCookie)
+            resolvePlaylistTracksFromSpotifyWebApi(playlistId, normalizedCookie)
         }
+
+    private suspend fun postPlaylistMetadataGraphQl(
+        playlistUri: String,
+        offset: Int,
+        limit: Int,
+        cookie: String,
+        tokenProvider: suspend (String) -> String,
+    ): JsonObject {
+        val variables =
+            buildJsonObject {
+                put("uri", playlistUri)
+                put("offset", offset.coerceAtLeast(0))
+                put("limit", limit.coerceIn(1, GRAPH_PLAYLIST_PAGE_SIZE))
+                put("enableWatchFeedEntrypoint", true)
+            }
+
+        return runCatching {
+            postGraphQl<JsonObject>(
+                operation = "fetchPlaylistMetadata",
+                variables = variables,
+                cookie = cookie,
+                tokenProvider = tokenProvider,
+            )
+        }.getOrElse { firstError ->
+            runCatching {
+                postGraphQl<JsonObject>(
+                    operation = "fetchPlaylistMetadata",
+                    variables = variables,
+                    cookie = cookie,
+                    hashOverride = SPOTIFY_FETCH_PLAYLIST_METADATA_HASH,
+                    tokenProvider = tokenProvider,
+                )
+            }.getOrElse { fallbackError ->
+                fallbackError.addSuppressed(firstError)
+                throw fallbackError
+            }
+        }
+    }
 
     private data class SpotifyPlaylistTrackLoad(
         val songs: List<SongItem>,
         val total: Int?,
+    )
+
+    private data class SpotifyGraphPlaylistTrackPage(
+        val songs: List<SongItem>,
+        val rawItemCount: Int,
+        val trackIds: List<String>,
+    )
+
+    private data class SpotifyGraphPlaylistTrackEntry(
+        val song: SongItem?,
+        val ref: SpotifyGraphPlaylistTrackRef?,
+    )
+
+    private data class SpotifyGraphPlaylistTrackRef(
+        val id: String,
     )
 
     private suspend fun resolvePlaylistTracksFromSpotifyWebApi(
@@ -3451,14 +3630,16 @@ object SpotifyCanvasClient {
 
             listOfNotNull(webLoad, deviceLoad)
                 .maxByOrNull { load -> load.songs.size }
+                ?.takeIf { it.isCompleteSpotifyPlaylistTrackLoad() }
                 ?.songs
-                ?.takeIf { it.isNotEmpty() }
                 ?: error("Spotify playlist tracks returned no songs")
         }
 
     private fun SpotifyPlaylistTrackLoad.isCompleteSpotifyPlaylistTrackLoad(): Boolean =
         songs.isNotEmpty() &&
             when {
+                songs.size == SPOTIFY_SUSPICIOUS_PLAYLIST_PAGE_SIZE &&
+                    (total == null || total <= SPOTIFY_SUSPICIOUS_PLAYLIST_PAGE_SIZE) -> false
                 total != null -> songs.size >= total || songs.size >= PLAYLIST_TRACK_SAFETY_LIMIT
                 songs.size <= SPOTIFY_SUSPICIOUS_PLAYLIST_PAGE_SIZE -> false
                 else -> true
@@ -3472,7 +3653,6 @@ object SpotifyCanvasClient {
     ): SpotifyPlaylistTrackLoad =
         withContext(Dispatchers.IO) {
             val songs = mutableListOf<SongItem>()
-            val seenSongIds = mutableSetOf<String>()
             var offset = 0
             var total: Int? = null
 
@@ -3481,13 +3661,9 @@ object SpotifyCanvasClient {
                     "https://api.spotify.com/v1/playlists/$playlistId/tracks"
                         .toHttpUrl()
                         .newBuilder()
-                        .addQueryParameter("market", "from_token")
-                        .addQueryParameter("limit", PLAYLIST_TRACK_PAGE_SIZE.toString())
+                        .addQueryParameter("limit", GRAPH_PLAYLIST_PAGE_SIZE.toString())
                         .addQueryParameter("offset", offset.toString())
-                        .addQueryParameter(
-                            "fields",
-                            "total,limit,offset,next,items(is_local,track(id,name,type,uri,duration_ms,explicit,external_ids(isrc),artists(id,name),album(id,name,images)))",
-                        ).build()
+                        .build()
 
                 val page =
                     spotifyApiGet(
@@ -3500,12 +3676,6 @@ object SpotifyCanvasClient {
                 total = total ?: page.long("total")?.toInt()
                 val pageOffset = page.long("offset")?.toInt() ?: offset
                 val rawItems = page.array("items").orEmpty()
-                val pageLimit =
-                    page.long("limit")
-                        ?.toInt()
-                        ?.takeIf { it > 0 }
-                        ?: rawItems.size.takeIf { it > 0 }
-                        ?: PLAYLIST_TRACK_PAGE_SIZE
                 val pageSongs =
                     rawItems
                         .mapNotNull { item ->
@@ -3513,11 +3683,10 @@ object SpotifyCanvasClient {
                                 ?: item.obj?.obj("item")
                         }.mapNotNull { it.toSpotifyPlaylistSong() }
 
-                val newSongs = pageSongs.filter { song -> seenSongIds.add(song.id) }
                 if (rawItems.isEmpty()) break
 
-                songs += newSongs
-                if (newSongs.isEmpty() && offset > 0) break
+                songs += pageSongs
+                if (pageSongs.isEmpty() && offset > 0) break
                 val nextOffset =
                     spotifyPagedNextOffset(
                         nextUrl = page.string("next"),
@@ -3529,7 +3698,7 @@ object SpotifyCanvasClient {
             }
 
             SpotifyPlaylistTrackLoad(
-                songs = songs.distinctBy { it.id },
+                songs = songs,
                 total = total,
             )
         }
@@ -3540,7 +3709,6 @@ object SpotifyCanvasClient {
     ): List<SongItem> =
         withContext(Dispatchers.IO) {
             val songs = mutableListOf<SongItem>()
-            val seenSongIds = mutableSetOf<String>()
             var offset = 0
             var total: Int? = null
 
@@ -3561,17 +3729,10 @@ object SpotifyCanvasClient {
 
                 total = total ?: page.spotifyMobilePlaylistTotal()
                 val pageOffset = page.long("offset")?.toInt() ?: offset
-                val pageLimit =
-                    page.long("limit")
-                        ?.toInt()
-                        ?.takeIf { it > 0 }
-                        ?: PLAYLIST_TRACK_PAGE_SIZE
                 val pageSongs = page.spotifyMobilePlaylistTracks()
                 if (pageSongs.isEmpty()) break
 
-                val newSongs = pageSongs.filter { song -> seenSongIds.add(song.id) }
-                songs += newSongs
-                if (newSongs.isEmpty() && offset > 0) break
+                songs += pageSongs
                 val nextOffset =
                     spotifyPagedNextOffset(
                         nextUrl = null,
@@ -3582,7 +3743,7 @@ object SpotifyCanvasClient {
                 offset = nextOffset
             }
 
-            songs.distinctBy { it.id }
+            songs
         }
 
     private suspend fun spotifySpClientGet(
@@ -3668,7 +3829,6 @@ object SpotifyCanvasClient {
             "https://api.spotify.com/v1/playlists/$playlistId"
                 .toHttpUrl()
                 .newBuilder()
-                .addQueryParameter("market", "from_token")
                 .addQueryParameter(
                     "fields",
                     "id,name,owner(display_name),images,total,tracks(total,items(track(id,name,duration_ms,explicit,external_ids(isrc),artists(id,name),album(id,name,images))))",
@@ -4217,8 +4377,9 @@ object SpotifyCanvasClient {
                             }
                         }
                     }.toString().toRequestBody(JSON_MEDIA_TYPE),
-                ).header("User-Agent", WEB_USER_AGENT)
+                ).header("User-Agent", DESKTOP_WEB_USER_AGENT)
                 .header("Accept", "application/json")
+                .header("Accept-Language", "en-GB")
                 .header("App-Platform", "WebPlayer")
                 .header("Referer", WEB_REFERER)
                 .header("Origin", WEB_ORIGIN)
@@ -5261,26 +5422,145 @@ object SpotifyCanvasClient {
             )
     }
 
-    private fun appendSpotifyGraphPlaylistSongs(
+    private suspend fun resolveSpotifyGraphPlaylistTrackPage(
         content: JsonObject?,
-        sink: MutableList<SongItem>,
-    ) {
-        content
-            ?.array("items")
-            .orEmpty()
-            .mapNotNull { item ->
-                (
-                    item.obj
-                        ?.obj("itemV2")
-                        ?.obj("data")
-                        ?: item.obj
-                            ?.obj("item")
-                            ?.obj("data")
-                        ?: item.obj
-                            ?.obj("data")
-                )
-                    ?.toSpotifyInitialStatePlaylistSong()
-            }.forEach(sink::add)
+        normalizedCookie: String,
+        tokenProvider: suspend (String) -> String,
+    ): SpotifyGraphPlaylistTrackPage {
+        val rawItems = content?.array("items").orEmpty()
+        val entries =
+            rawItems.mapNotNull { item ->
+                val data = item.obj?.spotifyGraphPlaylistTrackData() ?: return@mapNotNull null
+                val parsedSong = data.toSpotifyInitialStatePlaylistSong()
+                val ref = data.spotifyGraphPlaylistTrackRef()
+                if (parsedSong == null && ref == null) {
+                    null
+                } else {
+                    SpotifyGraphPlaylistTrackEntry(parsedSong, ref)
+                }
+            }
+        val parsedTrackIds = entries.mapNotNullTo(mutableSetOf()) { it.song?.id?.spotifyTrackId() }
+        val refsToHydrate =
+            entries
+                .mapNotNull { it.ref }
+                .filterNot { it.id in parsedTrackIds }
+                .distinctBy { it.id }
+        val hydratedTracks = hydrateSpotifyGraphPlaylistTracks(refsToHydrate, normalizedCookie, tokenProvider)
+        val songs =
+            entries.mapNotNull { entry ->
+                entry.song ?: entry.ref?.let { hydratedTracks[it.id] }
+            }
+
+        return SpotifyGraphPlaylistTrackPage(
+            songs = songs,
+            rawItemCount = rawItems.size,
+            trackIds =
+                entries.mapNotNull { entry ->
+                    entry.song?.id?.spotifyTrackId() ?: entry.ref?.id
+                },
+        )
+    }
+
+    private suspend fun hydrateSpotifyGraphPlaylistTracks(
+        refs: List<SpotifyGraphPlaylistTrackRef>,
+        normalizedCookie: String,
+        tokenProvider: suspend (String) -> String,
+    ): Map<String, SongItem> {
+        if (refs.isEmpty()) return emptyMap()
+        return withContext(Dispatchers.IO) {
+            val decoratedTracks =
+                runCatching {
+                    hydrateSpotifyGraphPlaylistTracksFromGraphQl(refs, normalizedCookie, tokenProvider)
+                }.onFailure { error ->
+                    Timber.w(error, "Spotify GraphQL playlist track decoration failed")
+                }.getOrDefault(emptyMap())
+
+            val missingRefs =
+                refs
+                    .filterNot { it.id in decoratedTracks }
+                    .distinctBy { it.id }
+            if (missingRefs.isEmpty()) return@withContext decoratedTracks
+
+            val webApiTracks =
+                runCatching {
+                    missingRefs
+                        .chunked(50)
+                        .flatMap { chunk ->
+                            val root =
+                                spotifyApiGet(
+                                    url =
+                                        "https://api.spotify.com/v1/tracks"
+                                            .toHttpUrl()
+                                            .newBuilder()
+                                            .addQueryParameter("ids", chunk.joinToString(",") { it.id })
+                                            .addQueryParameter("market", "from_token")
+                                            .build(),
+                                    normalizedCookie = normalizedCookie,
+                                    operation = "Spotify GraphQL playlist track metadata",
+                                    tokenProvider = tokenProvider,
+                                )
+                            root
+                                .array("tracks")
+                                .orEmpty()
+                                .mapNotNull { it.obj?.toSpotifyPlaylistSong() }
+                        }.associateBy { it.id.spotifyTrackId() ?: it.id }
+                }.onFailure { error ->
+                    Timber.w(error, "Spotify playlist Web API track metadata fallback failed")
+                }.getOrDefault(emptyMap())
+
+            decoratedTracks + webApiTracks
+        }
+    }
+
+    private suspend fun hydrateSpotifyGraphPlaylistTracksFromGraphQl(
+        refs: List<SpotifyGraphPlaylistTrackRef>,
+        normalizedCookie: String,
+        tokenProvider: suspend (String) -> String,
+    ): Map<String, SongItem> =
+        refs
+            .distinctBy { it.id }
+            .chunked(50)
+            .flatMap { chunk ->
+                postGraphQl<JsonObject>(
+                    operation = "decorateContextTracks",
+                    variables =
+                        buildJsonObject {
+                            put(
+                                "uris",
+                                JsonArray(
+                                    chunk.map { ref ->
+                                        JsonPrimitive("spotify:track:${ref.id}")
+                                    },
+                                ),
+                            )
+                        },
+                    cookie = normalizedCookie,
+                    hashOverride = SPOTIFY_DECORATE_CONTEXT_TRACKS_HASH,
+                    tokenProvider = tokenProvider,
+                ).obj("data")
+                    ?.array("tracks")
+                    .orEmpty()
+                    .mapNotNull { it.obj?.toSpotifyInitialStatePlaylistSong() }
+            }.associateBy { it.id.spotifyTrackId() ?: it.id }
+
+    private fun JsonObject.spotifyGraphPlaylistTrackData(): JsonObject? {
+        val wrapper =
+            obj("itemV2")
+                ?: obj("item")
+                ?: obj("entity")
+                ?: obj("track")
+                ?: obj("data")
+                ?: this
+        return wrapper.obj("data") ?: wrapper
+    }
+
+    private fun JsonObject.spotifyGraphPlaylistTrackRef(): SpotifyGraphPlaylistTrackRef? {
+        val id =
+            string("uri")?.spotifyTrackId()
+                ?: obj("track")?.string("uri")?.spotifyTrackId()
+                ?: obj("item")?.string("uri")?.spotifyTrackId()
+                ?: string("id")?.spotifyTrackId()
+        return id?.let(::SpotifyGraphPlaylistTrackRef)
     }
 
     private fun JsonObject.spotifyGraphContentTotal(): Int? =
