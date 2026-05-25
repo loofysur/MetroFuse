@@ -151,6 +151,7 @@ import com.metrolist.music.constants.PlayerButtonsStyle
 import com.metrolist.music.constants.PlayerButtonsStyleKey
 import com.metrolist.music.constants.PlayerHorizontalPadding
 import com.metrolist.music.constants.PlayerInlineLyricsKey
+import com.metrolist.music.constants.PlayerLegacyQualityLabelKey
 import com.metrolist.music.constants.QueuePeekHeight
 import com.metrolist.music.constants.SleepTimerDefaultKey
 import com.metrolist.music.constants.SleepTimerFadeOutKey
@@ -295,7 +296,7 @@ private fun FormatEntity.playerQualityLabel(): String? {
         ?.let { "${(it / 1000).coerceAtLeast(1)} kbps" }
     val sampleRate = sampleRate
         ?.takeIf { it > 0 }
-        ?.let { "$it Hz" }
+        ?.formatSampleRateLabel()
 
     if (codec == null && bitrate == null && sampleRate == null) return null
     if (codec == "ALAC" && bitrate == null && sampleRate == null) return null
@@ -311,6 +312,15 @@ private fun Int.isPlausibleAlacBitrate(sampleRate: Int?): Boolean {
         else -> 10_000_000
     }
     return this in 128_000..max
+}
+
+private fun Int.formatSampleRateLabel(): String {
+    val tenthsOfKhz = (this + 50) / 100
+    return if (tenthsOfKhz % 10 == 0) {
+        "${tenthsOfKhz / 10} kHz"
+    } else {
+        "${tenthsOfKhz / 10}.${tenthsOfKhz % 10} kHz"
+    }
 }
 
 private fun blendColors(
@@ -351,6 +361,7 @@ fun BottomSheetPlayer(
             UseNewPlayerDesignKey,
             defaultValue = true,
         )
+    val useLegacyQualityLabel by rememberPreference(PlayerLegacyQualityLabelKey, defaultValue = false)
     val (hidePlayerThumbnail, onHidePlayerThumbnailChange) = rememberPreference(HidePlayerThumbnailKey, false)
     val (hideStatusBarOnFullscreen) = rememberPreference(HideStatusBarOnFullscreenKey, false)
     val cropAlbumArt by rememberPreference(CropAlbumArtKey, false)
@@ -928,6 +939,32 @@ fun BottomSheetPlayer(
             },
         label = "TextBackgroundColor",
     )
+    val defaultQualityBadgeContainerColor = MaterialTheme.colorScheme.surfaceVariant
+    val defaultQualityBadgeContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val qualityBadgeContainerColor =
+        remember(effectivePlayerBackground, gradientColors, galaxyColors, useDarkTheme, defaultQualityBadgeContainerColor) {
+            when (effectivePlayerBackground) {
+                PlayerBackgroundStyle.DEFAULT -> {
+                    defaultQualityBadgeContainerColor.copy(alpha = if (useDarkTheme) 0.58f else 0.72f)
+                }
+
+                PlayerBackgroundStyle.BLUR,
+                PlayerBackgroundStyle.GRADIENT,
+                PlayerBackgroundStyle.GALAXY_BLUR -> {
+                    val artworkColor = gradientColors.firstOrNull() ?: galaxyColors.firstOrNull() ?: Color.Black
+                    artworkColor.copy(alpha = 0.54f)
+                }
+            }
+        }
+    val qualityBadgeContentColor =
+        remember(effectivePlayerBackground, defaultQualityBadgeContentColor) {
+            when (effectivePlayerBackground) {
+                PlayerBackgroundStyle.DEFAULT -> defaultQualityBadgeContentColor.copy(alpha = 0.9f)
+                PlayerBackgroundStyle.BLUR,
+                PlayerBackgroundStyle.GRADIENT,
+                PlayerBackgroundStyle.GALAXY_BLUR -> Color.White.copy(alpha = 0.82f)
+            }
+        }
 
     val icBackgroundColor by animateColorAsState(
         targetValue =
@@ -1493,6 +1530,15 @@ fun BottomSheetPlayer(
                 Column(
                     modifier = Modifier.weight(1f),
                 ) {
+                    if (!useLegacyQualityLabel) displayedPlayerQualityLabel?.let { label ->
+                        QualityBadge(
+                            label = label,
+                            containerColor = qualityBadgeContainerColor,
+                            contentColor = qualityBadgeContentColor,
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                    }
+
                     AnimatedContent(
                         targetState = mediaMetadata.title,
                         transitionSpec = { fadeIn() togetherWith fadeOut() },
@@ -2316,34 +2362,49 @@ fun BottomSheetPlayer(
                             }
                         }
                     }
-                    if (displayedPlayerQualityLabel != null || displayedPlayerSourceLabel != null) {
-                        Spacer(Modifier.height(10.dp))
-                        displayedPlayerQualityLabel?.let { label ->
-                            Text(
-                                text = label,
-                                color = TextBackgroundColor,
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.SemiBold,
-                                textAlign = TextAlign.Center,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                        }
-                        displayedPlayerSourceLabel?.let { source ->
-                            if (displayedPlayerQualityLabel != null) {
-                                Spacer(Modifier.height(2.dp))
+
+                    if ((useLegacyQualityLabel && displayedPlayerQualityLabel != null) || displayedPlayerSourceLabel != null) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                            modifier =
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = PlayerHorizontalPadding),
+                        ) {
+                            if (useLegacyQualityLabel) {
+                                displayedPlayerQualityLabel?.let { label ->
+                                    Text(
+                                        text = label,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = TextBackgroundColor,
+                                        textAlign = TextAlign.Center,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Clip,
+                                        modifier =
+                                            Modifier
+                                                .fillMaxWidth()
+                                                .basicMarquee(iterations = 1, initialDelayMillis = 1800, velocity = 24.dp),
+                                    )
+                                }
                             }
-                            Text(
-                                text = "Source: $source",
-                                color = TextBackgroundColor.copy(alpha = 0.82f),
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.Medium,
-                                textAlign = TextAlign.Center,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
+                            displayedPlayerSourceLabel?.let { source ->
+                                Text(
+                                    text = "Source: $source",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = TextBackgroundColor.copy(alpha = 0.82f),
+                                    textAlign = TextAlign.Center,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier =
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .basicMarquee(iterations = 1, initialDelayMillis = 2200, velocity = 24.dp),
+                                )
+                            }
                         }
                     }
                 }
@@ -2510,6 +2571,40 @@ fun BottomSheetPlayer(
                 },
             )
         }
+    }
+}
+
+@Composable
+private fun QualityBadge(
+    label: String,
+    containerColor: Color,
+    contentColor: Color,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier =
+            modifier
+                .clip(RoundedCornerShape(16.dp))
+                .background(containerColor)
+                .padding(horizontal = 10.dp, vertical = 5.dp),
+    ) {
+        Icon(
+            painter = painterResource(R.drawable.graphic_eq),
+            contentDescription = null,
+            tint = contentColor,
+            modifier = Modifier.size(14.dp),
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            text = label,
+            color = contentColor,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Clip,
+            modifier = Modifier.basicMarquee(iterations = 1, initialDelayMillis = 1800, velocity = 24.dp),
+        )
     }
 }
 
