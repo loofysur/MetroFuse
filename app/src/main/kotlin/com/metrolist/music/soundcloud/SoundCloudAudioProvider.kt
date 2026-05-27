@@ -9,9 +9,11 @@ import com.metrolist.music.utils.soundcloud.normalizeSoundCloudAuthInput
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.jsoup.Jsoup
 import org.json.JSONArray
 import org.json.JSONObject
 import timber.log.Timber
+import java.net.URLDecoder
 import java.text.Normalizer
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
@@ -28,7 +30,8 @@ object SoundCloudAudioProvider {
         "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Mobile Safari/537.36"
 
     private const val API_BASE_URL = "https://api-v2.soundcloud.com"
-    private const val SQUID_BASE_URL = "https://sc.squid.wtf"
+    const val MAID_BASE_URL = "https://sc1.maid.zone"
+    const val SQUID_BASE_URL = "https://sc.squid.wtf"
     private const val STREAM_MARKER_VALUE = "1"
     private const val CLIENT_ID_CACHE_MS = 60 * 60 * 1000L
     private const val STREAM_CACHE_MS = 5 * 60 * 1000L
@@ -157,9 +160,12 @@ object SoundCloudAudioProvider {
     }
 
     fun invalidate(mediaId: String) {
-        streamCache.keys
-            .filter { it.startsWith("$mediaId::") }
-            .forEach { streamCache.remove(it) }
+        val prefix = "$mediaId::"
+        for (key in streamCache.keys) {
+            if (key.startsWith(prefix)) {
+                streamCache.remove(key)
+            }
+        }
     }
 
     fun isSoundCloudUrl(value: String): Boolean =
@@ -172,6 +178,7 @@ object SoundCloudAudioProvider {
         limit: Int = SEARCH_LIMIT,
     ): List<TrackMetadata> {
         if (term.isBlank()) return emptyList()
+        searchMaidTracks(term, limit).takeIf { it.isNotEmpty() }?.let { return it }
         val clientId = getClientId()
         val results = searchTracks(term, clientId, limit) ?: return emptyList()
         return buildList {
@@ -182,6 +189,55 @@ object SoundCloudAudioProvider {
                 obj.toMatchedTrack()?.toTrackMetadata()?.let(::add)
             }
         }.distinctBy { it.permalinkUrl }
+    }
+
+    private fun searchMaidTracks(
+        term: String,
+        limit: Int,
+    ): List<TrackMetadata> {
+        val url = "$MAID_BASE_URL/search".toHttpUrlOrNull()
+            ?.newBuilder()
+            ?.addQueryParameter("q", term)
+            ?.addQueryParameter("type", "tracks")
+            ?.build()
+            ?: return emptyList()
+        val request = Request.Builder()
+            .url(url)
+            .get()
+            .header("Accept", "text/html")
+            .header("Referer", "$MAID_BASE_URL/")
+            .header("User-Agent", BROWSER_USER_AGENT)
+            .build()
+
+        return runCatching {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use emptyList()
+                Jsoup.parse(response.body.string(), MAID_BASE_URL)
+                    .select("a.listing[href]")
+                    .mapNotNull { element ->
+                        val href = element.attr("href").trim()
+                        val path = href.takeIf { it.startsWith("/") && !it.startsWith("/_/") }
+                            ?: return@mapNotNull null
+                        val title = element.selectFirst("h3")?.text()?.trim().orEmpty()
+                        if (title.isBlank()) return@mapNotNull null
+                        val artist = element.selectFirst(".meta span")?.text()?.trim()
+                            ?.takeIf { it.isNotBlank() }
+                            ?: "SoundCloud"
+                        TrackMetadata(
+                            trackId = path.trim('/'),
+                            title = title,
+                            artist = artist,
+                            permalinkUrl = "https://soundcloud.com${path.substringBefore('?')}",
+                            artworkUrl = element.selectFirst("img[src]")?.attr("abs:src")?.soundcloakArtworkUrl(),
+                            durationMs = null,
+                        )
+                    }
+                    .distinctBy { it.permalinkUrl }
+                    .take(limit.coerceAtLeast(1))
+            }
+        }.onFailure { error ->
+            Timber.tag("SoundCloudAudio").w(error, "SoundCloud Maid search failed; trying SoundCloud API")
+        }.getOrDefault(emptyList())
     }
 
     fun addPlaybackHeaders(
@@ -852,6 +908,12 @@ object SoundCloudAudioProvider {
             lower.contains("opus") -> "opus"
             else -> ""
         }
+    }
+
+    private fun String.soundcloakArtworkUrl(): String? {
+        val url = toHttpUrlOrNull() ?: return takeIf { it.startsWith("http", ignoreCase = true) }
+        val proxied = url.queryParameter("url") ?: return toString()
+        return runCatching { URLDecoder.decode(proxied, "UTF-8") }.getOrDefault(proxied)
     }
 
     private fun bitrateFromPreset(

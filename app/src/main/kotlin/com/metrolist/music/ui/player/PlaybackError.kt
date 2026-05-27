@@ -26,7 +26,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -39,6 +43,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.media3.common.PlaybackException
 import com.metrolist.music.R
+import com.metrolist.music.utils.PastefoxLogUploader
+import kotlinx.coroutines.launch
 
 @Composable
 fun PlaybackError(
@@ -46,23 +52,32 @@ fun PlaybackError(
     retry: () -> Unit,
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val diagnosticText = remember(error) { buildPlaybackDiagnostic(error) }
+    var isCreatingPaste by remember(error) { mutableStateOf(false) }
 
     // Build detailed error info for debugging
-    val rawErrorMessage = error.cause?.cause?.message 
-        ?: error.cause?.message 
-        ?: error.message 
-        ?: stringResource(R.string.error_unknown)
+    val unknownError = stringResource(R.string.error_unknown)
+    val causeMessages = remember(error) { error.causeMessages() }
+    val rawErrorMessage = causeMessages.firstOrNull { it.isAppleWrapperMessage() }
+        ?: error.cause?.cause?.message
+        ?: error.cause?.message
+        ?: error.message
+        ?: unknownError
     
-    // Check if this is an age-restricted content error
-    // Age-restricted content typically returns 403 Forbidden or contains age-related messages
-    val isAgeRestricted = rawErrorMessage.contains("age", ignoreCase = true) ||
+    val isAppleWrapperFailure = causeMessages.any { it.isAppleWrapperMessage() }
+
+    // Check if this is an age-restricted content error.
+    // Apple wrapper errors can also arrive through generic HTTP/status buckets, so leave those diagnostic messages intact.
+    val isAgeRestricted = !isAppleWrapperFailure && (
+        rawErrorMessage.contains("age", ignoreCase = true) ||
             rawErrorMessage.contains("Sign in to confirm your age", ignoreCase = true) ||
             rawErrorMessage.contains("LOGIN_REQUIRED", ignoreCase = true) ||
             rawErrorMessage.contains("confirm your age", ignoreCase = true) ||
             rawErrorMessage.contains("403", ignoreCase = true) ||
             rawErrorMessage.contains("Response code: 403", ignoreCase = true) ||
             error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS
+        )
     
     val errorMessage = if (isAgeRestricted) {
         "This app does not support playing age-restricted songs. We are working on fixing this issue."
@@ -128,10 +143,35 @@ fun PlaybackError(
         ) {
             OutlinedButton(
                 onClick = {
-                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    cm.setPrimaryClip(ClipData.newPlainText("Metrolist playback error", diagnosticText))
-                    Toast.makeText(context, R.string.playback_error_copied, Toast.LENGTH_SHORT).show()
+                    if (isCreatingPaste) return@OutlinedButton
+                    isCreatingPaste = true
+                    Toast.makeText(context, R.string.playback_error_paste_creating, Toast.LENGTH_SHORT).show()
+                    scope.launch {
+                        val pasteResult = PastefoxLogUploader.createLogPaste(
+                            title = context.getString(R.string.playback_error_paste_title),
+                            content = diagnosticText,
+                        )
+                        val clipboardText = pasteResult.getOrElse { diagnosticText }
+                        val label = if (pasteResult.isSuccess) {
+                            "MetroFuse playback error link"
+                        } else {
+                            "MetroFuse playback error"
+                        }
+                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        cm.setPrimaryClip(ClipData.newPlainText(label, clipboardText))
+                        Toast.makeText(
+                            context,
+                            if (pasteResult.isSuccess) {
+                                R.string.playback_error_link_copied
+                            } else {
+                                R.string.playback_error_paste_failed
+                            },
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                        isCreatingPaste = false
+                    }
                 },
+                enabled = !isCreatingPaste,
                 shape = RoundedCornerShape(20.dp),
             ) {
                 Icon(
@@ -140,7 +180,15 @@ fun PlaybackError(
                     modifier = Modifier.size(18.dp),
                 )
                 Spacer(modifier = Modifier.width(6.dp))
-                Text(text = stringResource(R.string.copy_error))
+                Text(
+                    text = stringResource(
+                        if (isCreatingPaste) {
+                            R.string.playback_error_paste_creating_short
+                        } else {
+                            R.string.copy_error
+                        },
+                    ),
+                )
             }
 
             // Retry button
@@ -165,7 +213,7 @@ fun PlaybackError(
 
 private fun buildPlaybackDiagnostic(error: PlaybackException): String =
     buildString {
-        appendLine("Metrolist playback error")
+        appendLine("MetroFuse playback error")
         appendLine("Error code: ${getErrorCodeName(error.errorCode)} (${error.errorCode})")
         appendLine("Message: ${error.message ?: "null"}")
         appendLine()
@@ -181,6 +229,21 @@ private fun buildPlaybackDiagnostic(error: PlaybackException): String =
         appendLine("Stack trace:")
         appendLine(error.stackTraceToString())
     }
+
+private fun PlaybackException.causeMessages(): List<String> =
+    buildList {
+        var current: Throwable? = this@causeMessages
+        var depth = 0
+        while (current != null && depth < 12) {
+            current.message?.takeIf { it.isNotBlank() }?.let(::add)
+            current = current.cause
+            depth++
+        }
+    }
+
+private fun String.isAppleWrapperMessage(): Boolean =
+    contains("Apple Music", ignoreCase = true) ||
+        contains("Apple wrapper", ignoreCase = true)
 
 /**
  * Get human-readable error code name from PlaybackException error code

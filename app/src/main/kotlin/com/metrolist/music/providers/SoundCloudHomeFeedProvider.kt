@@ -20,9 +20,11 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.jsoup.Jsoup
 import org.json.JSONArray
 import org.json.JSONObject
 import timber.log.Timber
+import java.net.URLDecoder
 import java.util.concurrent.TimeUnit
 import com.metrolist.innertube.models.Artist as TubeArtist
 
@@ -305,12 +307,67 @@ object SoundCloudHomeFeedProvider {
         limit: Int,
     ): List<PlaylistItem> {
         if (query.isBlank()) return emptyList()
-        return safeCollectionItems(
+        searchMaidPlaylists(query, limit).takeIf { it.isNotEmpty() }?.let { return it }
+        val apiItems = safeCollectionItems(
             path = "search/playlists",
             authToken = authToken,
             limit = limit,
             extraParams = mapOf("q" to query),
         ).playlistItems()
+        return apiItems
+    }
+
+    private fun searchMaidPlaylists(
+        query: String,
+        limit: Int,
+    ): List<PlaylistItem> {
+        val url = SoundCloudAudioProvider.MAID_BASE_URL.toHttpUrl()
+            .newBuilder()
+            .addPathSegment("search")
+            .addQueryParameter("q", query)
+            .addQueryParameter("type", "playlists")
+            .build()
+        val request = Request.Builder()
+            .url(url)
+            .get()
+            .header("Accept", "text/html")
+            .header("Referer", "${SoundCloudAudioProvider.MAID_BASE_URL}/")
+            .header("User-Agent", SoundCloudAudioProvider.BROWSER_USER_AGENT)
+            .build()
+
+        return runCatching {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use emptyList()
+                Jsoup.parse(response.body.string(), SoundCloudAudioProvider.MAID_BASE_URL)
+                    .select("a.listing[href]")
+                    .mapNotNull { element ->
+                        val href = element.attr("href").trim()
+                        if (!href.startsWith("/") || href.startsWith("/_/")) return@mapNotNull null
+                        val title = element.selectFirst("h3")?.text()?.trim().orEmpty()
+                        if (title.isBlank()) return@mapNotNull null
+                        val author = element.selectFirst(".meta span")?.text()?.trim()?.takeIf { it.isNotBlank() }
+                        val path = href.substringBefore('?')
+                        val soundCloudUrl = "https://soundcloud.com$path"
+                        val playlistId = path.substringAfter("/sets/", missingDelimiterValue = "")
+                            .trim('/')
+                            .takeIf { it.isNotBlank() }
+                        PlaylistItem(
+                            id = playlistId?.let { "soundcloud:playlist:$it" } ?: soundCloudUrl,
+                            title = title,
+                            author = author?.let { TubeArtist(name = it, id = null) },
+                            songCountText = null,
+                            thumbnail = element.selectFirst("img[src]")?.attr("abs:src")?.soundcloakArtworkUrl(),
+                            playEndpoint = null,
+                            shuffleEndpoint = null,
+                            radioEndpoint = null,
+                        )
+                    }
+                    .distinctBy { it.id }
+                    .take(limit.coerceAtLeast(1))
+            }
+        }.onFailure { throwable ->
+            Timber.tag("SoundCloudHome").w(throwable, "SoundCloud Maid playlist search failed")
+        }.getOrDefault(emptyList())
     }
 
     private fun safeCollectionItems(
@@ -824,6 +881,13 @@ object SoundCloudHomeFeedProvider {
     private fun String.toLargeArtworkUrl(): String =
         replace("-large.", "-t500x500.")
             .replace("-t120x120.", "-t500x500.")
+
+    private fun String.soundcloakArtworkUrl(): String? {
+        val url = toHttpUrlOrNull() ?: return takeIf { it.startsWith("http", ignoreCase = true) }
+        val proxied = url.queryParameter("url") ?: return this
+        return runCatching { URLDecoder.decode(proxied, "UTF-8") }.getOrDefault(proxied)
+            .toLargeArtworkUrl()
+    }
 
     private fun String.displayName(): String =
         replaceFirstChar { it.uppercase() }

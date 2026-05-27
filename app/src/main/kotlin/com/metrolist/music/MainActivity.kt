@@ -219,6 +219,7 @@ import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.net.URLDecoder
 import java.net.URLEncoder
+import java.util.LinkedHashMap
 import java.util.Locale
 import javax.inject.Inject
 
@@ -601,7 +602,12 @@ class MainActivity : ComponentActivity() {
             mutableStateOf(selectedThemeColor)
         }
 
-        val themeColorCache = remember { mutableMapOf<String, Color>() }
+        val themeColorCache = remember {
+            object : LinkedHashMap<String, Color>(64, 0.75f, true) {
+                override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Color>?): Boolean =
+                    size > 64
+            }
+        }
 
         LaunchedEffect(selectedThemeColor) {
             if (!enableDynamicTheme) {

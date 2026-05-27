@@ -291,9 +291,12 @@ object InstagramAudioProvider {
 
     fun invalidate(mediaId: String) {
         val normalizedMediaId = mediaId.normalizedSearchText()
-        streamCache.keys
-            .filter { it.startsWith("$normalizedMediaId|") }
-            .forEach { streamCache.remove(it) }
+        val prefix = "$normalizedMediaId|"
+        for (key in streamCache.keys) {
+            if (key.startsWith(prefix)) {
+                streamCache.remove(key)
+            }
+        }
     }
 
     fun normalizeIsrc(value: String?): String? {
@@ -1140,10 +1143,10 @@ object InstagramAudioProvider {
     ) {
         streamCache[key] = CacheEntry(stream, System.currentTimeMillis())
         if (streamCache.size > STREAM_CACHE_MAX_SIZE) {
-            streamCache.entries
-                .sortedBy { it.value.createdAtMs }
-                .take((streamCache.size - STREAM_CACHE_MAX_SIZE).coerceAtLeast(1))
-                .forEach { streamCache.remove(it.key) }
+            repeat((streamCache.size - STREAM_CACHE_MAX_SIZE).coerceAtLeast(1)) {
+                val oldest = streamCache.entries.minByOrNull { it.value.createdAtMs } ?: return@repeat
+                streamCache.remove(oldest.key)
+            }
         }
     }
 

@@ -28,6 +28,7 @@ import com.metrolist.music.constants.AudioProviderOrder
 import com.metrolist.music.constants.AudioProviderOrderItem
 import com.metrolist.music.constants.AudioProviderOrderKey
 import com.metrolist.music.constants.AppleMusicForceAlacKey
+import com.metrolist.music.constants.AppleMusicLowPowerKey
 import com.metrolist.music.constants.AppleMusicSuperFastKey
 import com.metrolist.music.constants.DeezerAudioQuality
 import com.metrolist.music.constants.DeezerAudioQualityKey
@@ -283,6 +284,7 @@ constructor(
         val appleMusicForceAlac = context.dataStore.get(AppleMusicForceAlacKey, false)
         val appleMusicAudioMode = context.currentAppleMusicWrapperMode()
         val appleMusicSuperFast = context.dataStore.get(AppleMusicSuperFastKey, false)
+        val appleMusicLowPower = context.dataStore.get(AppleMusicLowPowerKey, false)
         val appleWrapperHost = context.dataStore.get(AppleMusicWrapperHostKey, AppleMusicWrapperManagerProvider.DEFAULT_HOST)
         val appleWrapperSecure = context.dataStore.get(AppleMusicWrapperSecureKey, true)
         val deezerResolverUrl = context.dataStore.get(DeezerResolverUrlKey, DeezerAudioProvider.DEFAULT_RESOLVER_URL)
@@ -310,6 +312,7 @@ constructor(
             "appleForceAlac=$appleMusicForceAlac",
             "appleAudioMode=${appleMusicAudioMode.name}",
             "appleSuperFast=$appleMusicSuperFast",
+            "appleLowPower=$appleMusicLowPower",
             "appleWrapperHost=${appleWrapperHost.hashCode()}",
             "appleWrapperSecure=$appleWrapperSecure",
             "deezerResolver=${deezerResolverUrl.hashCode()}",
@@ -336,6 +339,7 @@ constructor(
         val appleMusicForceAlac = context.dataStore.get(AppleMusicForceAlacKey, false)
         val appleMusicAudioMode = context.currentAppleMusicWrapperMode()
         val appleMusicSuperFast = context.dataStore.get(AppleMusicSuperFastKey, false)
+        val appleMusicLowPower = context.dataStore.get(AppleMusicLowPowerKey, false)
         val appleWrapperHost = context.dataStore.get(AppleMusicWrapperHostKey, AppleMusicWrapperManagerProvider.DEFAULT_HOST)
         val appleWrapperSecure = context.dataStore.get(AppleMusicWrapperSecureKey, true)
         val deezerResolverUrl = context.dataStore.get(DeezerResolverUrlKey, DeezerAudioProvider.DEFAULT_RESOLVER_URL)
@@ -366,6 +370,7 @@ constructor(
                 uri = AppleMusicWrapperDataSource.toProgressiveStreamUri(
                     uri = mediaUri.toUri(),
                     highWorkerMode = appleMusicSuperFast,
+                    lowPowerMode = appleMusicLowPower,
                 ).toString(),
                 expiresAtMs = expiresAtMs,
                 cacheKey = appleWrapperCacheKey(mediaId),
@@ -509,6 +514,7 @@ constructor(
                                 wrapperSecure = appleWrapperSecure,
                                 audioMode = appleMusicAudioMode,
                                 highWorkerMode = appleMusicSuperFast,
+                                lowPowerMode = appleMusicLowPower,
                             ),
                         )
                     }
@@ -593,6 +599,7 @@ constructor(
         wrapperSecure: Boolean = true,
         audioMode: AppleMusicWrapperManagerProvider.WrapperMode = AppleMusicWrapperManagerProvider.WrapperMode.ALAC,
         highWorkerMode: Boolean = false,
+        lowPowerMode: Boolean = false,
     ): AppleMusicSongResolver.Query {
         return AppleMusicSongResolver.Query(
             mediaId = mediaId,
@@ -609,6 +616,7 @@ constructor(
             wrapperSecure = wrapperSecure,
             audioMode = audioMode,
             highWorkerMode = highWorkerMode,
+            lowPowerMode = lowPowerMode,
         )
     }
 

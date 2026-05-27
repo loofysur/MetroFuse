@@ -162,9 +162,12 @@ object QobuzAudioProvider {
     }
 
     fun invalidate(mediaId: String) {
-        streamCache.keys
-            .filter { it.startsWith("$mediaId::") }
-            .forEach { streamCache.remove(it) }
+        val prefix = "$mediaId::"
+        for (key in streamCache.keys) {
+            if (key.startsWith(prefix)) {
+                streamCache.remove(key)
+            }
+        }
     }
 
     fun searchCandidates(

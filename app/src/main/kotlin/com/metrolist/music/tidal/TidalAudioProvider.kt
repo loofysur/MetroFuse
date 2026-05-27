@@ -333,14 +333,17 @@ object TidalAudioProvider {
     }
 
     fun invalidate(mediaId: String) {
-        streamCache.keys
-            .filter { it.startsWith("$mediaId::") }
-            .forEach { key ->
+        val prefix = "$mediaId::"
+        for (key in streamCache.keys) {
+            if (key.startsWith(prefix)) {
                 streamCache.remove(key)?.mediaUri?.deleteIfLocalFileUri()
             }
-        streamFailureCache.keys
-            .filter { it.startsWith("$mediaId::") }
-            .forEach(streamFailureCache::remove)
+        }
+        for (key in streamFailureCache.keys) {
+            if (key.startsWith(prefix)) {
+                streamFailureCache.remove(key)
+            }
+        }
         trackCache.remove(mediaId.trackCacheKeyFallback())
     }
 

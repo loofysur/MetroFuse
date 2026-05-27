@@ -167,6 +167,7 @@ val AppleMusicFallbackEnabledKey = booleanPreferencesKey("appleMusicFallbackEnab
 val AppleMusicForceAlacKey = booleanPreferencesKey("appleMusicForceAlac")
 val AppleMusicAudioQualityKey = stringPreferencesKey("appleMusicAudioQuality")
 val AppleMusicSuperFastKey = booleanPreferencesKey("appleMusicSuperFast")
+val AppleMusicLowPowerKey = booleanPreferencesKey("appleMusicLowPower")
 val AppleMusicWrapperHostKey = stringPreferencesKey("appleMusicWrapperHost")
 val AppleMusicWrapperSecureKey = booleanPreferencesKey("appleMusicWrapperSecure")
 val TidalAudioQualityKey = stringPreferencesKey("tidalAudioQuality")

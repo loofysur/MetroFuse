@@ -802,9 +802,14 @@
     <string name="failed_to_parse_proxy">Failed to parse proxy URL</string>
 
     <!-- Playback errors -->
-    <string name="error_playback_failed">Playback failed</string>
+    <string name="error_playback_failed">MetroFuse playback error</string>
     <string name="copy_error">Copy error</string>
     <string name="playback_error_copied">Playback error copied</string>
+    <string name="playback_error_paste_title">MetroFuse playback error</string>
+    <string name="playback_error_paste_creating">Creating Pastefox link...</string>
+    <string name="playback_error_paste_creating_short">Creating link...</string>
+    <string name="playback_error_link_copied">Pastefox error link copied</string>
+    <string name="playback_error_paste_failed">Could not create Pastefox link. Raw error copied instead.</string>
     <string name="error_episode_save">Failed to save episode</string>
     <string name="error_episode_remove">Failed to remove episode</string>
     <string name="error_podcast_subscribe">Failed to subscribe to podcast</string>
@@ -1226,6 +1231,8 @@
     <string name="apple_music_integration_desc">Wrapper playback, downloads, codec, and speed options</string>
     <string name="apple_music_super_fast">Super fast Apple Music loading</string>
     <string name="apple_music_super_fast_desc">Prefetches a few extra ALAC chunks with capped memory so songs start faster than normal without going wild on battery or heat</string>
+    <string name="apple_music_low_power">Low-power Apple Music loading</string>
+    <string name="apple_music_low_power_desc">Uses fewer wrapper workers and smaller ALAC buffers for lower-end phones; startup can be slower</string>
     <string name="apple_music_wrapper_host">Apple Music wrapper host</string>
     <string name="apple_music_wrapper_host_desc">Current wrapper-manager: %1$s</string>
     <string name="apple_music_wrapper_host_placeholder">wm.wol.moe or 192.168.1.20:8080</string>

@@ -40,6 +40,7 @@ import com.metrolist.music.constants.AppleMusicAudioQualityKey
 import com.metrolist.music.constants.AppleMusicAudioQualityOptions
 import com.metrolist.music.constants.AppleMusicFallbackEnabledKey
 import com.metrolist.music.constants.AppleMusicForceAlacKey
+import com.metrolist.music.constants.AppleMusicLowPowerKey
 import com.metrolist.music.constants.AppleMusicSuperFastKey
 import com.metrolist.music.constants.AppleMusicWrapperHostKey
 import com.metrolist.music.constants.AppleMusicWrapperSecureKey
@@ -72,6 +73,10 @@ fun AppleMusicSettings(
     )
     val (appleMusicSuperFast, onAppleMusicSuperFastChange) = rememberPreference(
         AppleMusicSuperFastKey,
+        defaultValue = false,
+    )
+    val (appleMusicLowPower, onAppleMusicLowPowerChange) = rememberPreference(
+        AppleMusicLowPowerKey,
         defaultValue = false,
     )
     var appleWrapperHost by rememberPreference(
@@ -219,7 +224,12 @@ fun AppleMusicSettings(
                         trailingContent = {
                             Switch(
                                 checked = appleMusicSuperFast,
-                                onCheckedChange = onAppleMusicSuperFastChange,
+                                onCheckedChange = { enabled ->
+                                    onAppleMusicSuperFastChange(enabled)
+                                    if (enabled && appleMusicLowPower) {
+                                        onAppleMusicLowPowerChange(false)
+                                    }
+                                },
                                 thumbContent = {
                                     Icon(
                                         painter = painterResource(
@@ -231,7 +241,45 @@ fun AppleMusicSettings(
                                 },
                             )
                         },
-                        onClick = { onAppleMusicSuperFastChange(!appleMusicSuperFast) },
+                        onClick = {
+                            val enabled = !appleMusicSuperFast
+                            onAppleMusicSuperFastChange(enabled)
+                            if (enabled && appleMusicLowPower) {
+                                onAppleMusicLowPowerChange(false)
+                            }
+                        },
+                    ),
+                    Material3SettingsItem(
+                        icon = painterResource(R.drawable.tune),
+                        title = { Text(stringResource(R.string.apple_music_low_power)) },
+                        description = { Text(stringResource(R.string.apple_music_low_power_desc)) },
+                        trailingContent = {
+                            Switch(
+                                checked = appleMusicLowPower,
+                                onCheckedChange = { enabled ->
+                                    onAppleMusicLowPowerChange(enabled)
+                                    if (enabled && appleMusicSuperFast) {
+                                        onAppleMusicSuperFastChange(false)
+                                    }
+                                },
+                                thumbContent = {
+                                    Icon(
+                                        painter = painterResource(
+                                            id = if (appleMusicLowPower) R.drawable.check else R.drawable.close,
+                                        ),
+                                        contentDescription = null,
+                                        modifier = Modifier.size(SwitchDefaults.IconSize),
+                                    )
+                                },
+                            )
+                        },
+                        onClick = {
+                            val enabled = !appleMusicLowPower
+                            onAppleMusicLowPowerChange(enabled)
+                            if (enabled && appleMusicSuperFast) {
+                                onAppleMusicSuperFastChange(false)
+                            }
+                        },
                     ),
                     Material3SettingsItem(
                         icon = painterResource(R.drawable.link),

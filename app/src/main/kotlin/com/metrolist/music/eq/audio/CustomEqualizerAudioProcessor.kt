@@ -22,6 +22,7 @@ class CustomEqualizerAudioProcessor : AudioProcessor {
     private var channelCount = 0
     private var encoding = C.ENCODING_INVALID
     private var isActive = false
+    private var formatSupported = false
     private var equalizerEnabled = false
 
     private var inputBuffer: ByteBuffer = EMPTY_BUFFER
@@ -116,6 +117,15 @@ class CustomEqualizerAudioProcessor : AudioProcessor {
         Timber.tag(TAG)
             .d("Configured: sampleRate=$sampleRate, channels=$channelCount, encoding=$encoding")
 
+        formatSupported = encoding == C.ENCODING_PCM_16BIT && channelCount in 1..2
+        if (!formatSupported) {
+            isActive = false
+            Timber.tag(TAG).d(
+                "Bypassing EQ for unsupported format: sampleRate=$sampleRate, channels=$channelCount, encoding=$encoding"
+            )
+            return AudioProcessor.AudioFormat.NOT_SET
+        }
+
         // Apply pending profile if one exists
         pendingProfile?.let { profile ->
             preampGain = 10.0.pow(profile.preamp / 20.0)
@@ -126,12 +136,7 @@ class CustomEqualizerAudioProcessor : AudioProcessor {
                 .d("Applied pending profile with ${filters.size} bands and ${profile.preamp} dB preamp")
         }
 
-        // Only support 16-bit PCM stereo/mono
-        if (encoding != C.ENCODING_PCM_16BIT || channelCount > 2) {
-            val exception = AudioProcessor.UnhandledAudioFormatException(inputAudioFormat)
-            throw exception // Rethrow, unsupported
-        }
-
+        // Keep active for supported PCM so EQ can be toggled while playback is already running.
         isActive = true
         return inputAudioFormat
     }
@@ -139,7 +144,7 @@ class CustomEqualizerAudioProcessor : AudioProcessor {
     override fun isActive(): Boolean = isActive
 
     override fun queueInput(inputBuffer: ByteBuffer) {
-        if (!equalizerEnabled || filters.isEmpty()) {
+        if (!formatSupported || !equalizerEnabled || filters.isEmpty()) {
             // Passthrough mode - directly use input as output
             val remaining = inputBuffer.remaining()
             if (remaining == 0) return
@@ -283,6 +288,7 @@ class CustomEqualizerAudioProcessor : AudioProcessor {
         channelCount = 0
         encoding = C.ENCODING_INVALID
         isActive = false
+        formatSupported = false
         filters.forEach { it.reset() }
     }
 

@@ -22,6 +22,7 @@ import java.util.concurrent.TimeUnit
 @UnstableApi
 class AppleMusicWrapperDataSource(
     private val client: OkHttpClient = defaultClient,
+    private val onVirtualHlsSegmentBitrate: ((mediaId: String, bitrate: Int, mediaStartMs: Long?, mediaEndMs: Long?) -> Unit)? = null,
 ) : BaseDataSource(true) {
     private var opened = false
     private var currentUri: Uri? = null
@@ -53,13 +54,13 @@ class AppleMusicWrapperDataSource(
             }
         } catch (error: Exception) {
             if (AppleMusicDecryptPipeline.isAlacStartupTimeout(error)) {
-                throw IOException("Apple Music wrapper ALAC failed: ${error.message ?: error.javaClass.simpleName}", error)
+                throw request.wrapperFailure(error)
             }
             if (request.isVirtualHlsResource) {
-                throw IOException("Apple Music wrapper ALAC failed: ${error.message ?: error.javaClass.simpleName}", error)
+                throw currentRequest.wrapperFailure(error)
             } else {
                 retryWithFreshM3u8(error)
-                    ?: throw IOException("Apple Music wrapper ALAC failed: ${error.message ?: error.javaClass.simpleName}", error)
+                    ?: throw currentRequest.wrapperFailure(error)
             }
         }
         opened = true
@@ -72,13 +73,24 @@ class AppleMusicWrapperDataSource(
         resourceName: String,
         dataSpec: DataSpec,
     ): Long {
-        val bytes = AppleMusicDecryptPipeline.openVirtualHlsResource(
-            request = request.toVirtualHlsRequest(),
-            resourceName = resourceName,
-            resourceUri = request::resourceUri,
-            client = client,
-            highWorkerMode = request.highWorkerMode,
-        )
+        val resource = request.openVirtualHlsResourceWithInfo(resourceName)
+        val bytes = resource.bytes
+        if (resource.isMediaSegment) {
+            val mediaDurationMs = resource.mediaStartMs?.let { start ->
+                resource.mediaEndMs?.let { end -> end - start }
+            }
+            if (mediaDurationMs != null && mediaDurationMs > 0L) {
+                val bitrate = ((bytes.size.toLong() * 8_000L) / mediaDurationMs)
+                    .coerceAtMost(Int.MAX_VALUE.toLong())
+                    .toInt()
+                onVirtualHlsSegmentBitrate?.invoke(
+                    request.mediaId,
+                    bitrate,
+                    resource.mediaStartMs,
+                    resource.mediaEndMs,
+                )
+            }
+        }
         val position = dataSpec.position.coerceIn(0L, bytes.size.toLong()).toInt()
         val available = bytes.size - position
         val requested = dataSpec.length.takeIf { it != C.LENGTH_UNSET.toLong() }
@@ -90,25 +102,39 @@ class AppleMusicWrapperDataSource(
         return requested.toLong()
     }
 
+    private fun Request.openVirtualHlsResourceWithInfo(resourceName: String): AppleMusicDecryptPipeline.VirtualHlsResource =
+        AppleMusicDecryptPipeline.openVirtualHlsResourceWithInfo(
+            request = toVirtualHlsRequest(),
+            resourceName = resourceName,
+            resourceUri = { name -> resourceUri(name) },
+            client = client,
+            highWorkerMode = highWorkerMode,
+            lowPowerMode = lowPowerMode,
+        )
+
     private fun openStream(
         request: Request,
         dataSpec: DataSpec,
     ): Long {
-        val (stream, length) = AppleMusicDecryptPipeline.openDecryptedStream(
-            adamId = request.adamId,
-            m3u8Url = request.m3u8Url,
-            host = request.host,
-            secure = request.secure,
-            mode = request.mode,
-            client = client,
-            start = dataSpec.position,
-            requestedLength = dataSpec.length,
-            durationMs = request.durationMs,
-            highWorkerMode = request.highWorkerMode,
-        )
+        val (stream, length) = request.openDecryptedStream(dataSpec)
         currentStream = stream
         return length
     }
+
+    private fun Request.openDecryptedStream(dataSpec: DataSpec): Pair<InputStream, Long> =
+        AppleMusicDecryptPipeline.openDecryptedStream(
+            adamId = adamId,
+            m3u8Url = m3u8Url,
+            host = host,
+            secure = secure,
+            mode = mode,
+            client = client,
+            start = dataSpec.position,
+            requestedLength = dataSpec.length,
+            durationMs = durationMs,
+            highWorkerMode = highWorkerMode,
+            lowPowerMode = lowPowerMode,
+        )
 
     override fun read(
         buffer: ByteArray,
@@ -120,12 +146,12 @@ class AppleMusicWrapperDataSource(
             currentStream?.read(buffer, offset, length)
         } catch (error: Exception) {
             if (AppleMusicDecryptPipeline.isAlacStartupTimeout(error)) {
-                throw IOException("Apple Music wrapper ALAC failed: ${error.message ?: error.javaClass.simpleName}", error)
+                throw currentRequest.wrapperFailure(error)
             }
             if (retryWithFreshM3u8(error) != null) {
                 currentStream?.read(buffer, offset, length)
             } else {
-                throw IOException("Apple Music wrapper ALAC failed: ${error.message ?: error.javaClass.simpleName}", error)
+                throw currentRequest.wrapperFailure(error)
             }
         } ?: return C.RESULT_END_OF_INPUT
         if (read == -1) return C.RESULT_END_OF_INPUT
@@ -137,10 +163,11 @@ class AppleMusicWrapperDataSource(
     private fun retryWithFreshM3u8(error: Throwable): Long? {
         val request = currentRequest ?: return null
         val dataSpec = currentDataSpec ?: return null
+        if (request.mode != AppleMusicWrapperManagerProvider.WrapperMode.ALAC) return null
         if (retriedFreshM3u8) return null
         retriedFreshM3u8 = true
         runCatching { currentStream?.close() }.onFailure { closeError ->
-            Timber.tag(TAG).w(closeError, "Failed to close stale Apple wrapper ALAC stream before retry")
+            Timber.tag(TAG).w(closeError, "Failed to close stale ${request.mode.errorLabel} stream before retry")
         }
         currentStream = null
         AppleMusicDecryptPipeline.clearMemoryCaches()
@@ -153,9 +180,24 @@ class AppleMusicWrapperDataSource(
             bytesReadFromOpen = 0L
             openStream(freshRequest, retrySpec)
         }.onFailure { retryError ->
-            Timber.tag(TAG).w(retryError, "Apple wrapper ALAC fresh M3U8 retry failed after ${error.message ?: error.javaClass.simpleName}")
+            Timber.tag(TAG).w(
+                retryError,
+                "${request.mode.errorLabel} fresh M3U8 retry failed after ${error.message ?: error.javaClass.simpleName}"
+            )
         }.getOrNull()
     }
+
+    private fun Request?.wrapperFailure(error: Throwable): IOException {
+        val mode = this?.mode ?: AppleMusicWrapperManagerProvider.WrapperMode.ALAC
+        return IOException("${mode.errorLabel} failed: ${error.message ?: error.javaClass.simpleName}", error)
+    }
+
+    private val AppleMusicWrapperManagerProvider.WrapperMode.errorLabel: String
+        get() = when (this) {
+            AppleMusicWrapperManagerProvider.WrapperMode.ALAC -> "Apple Music ALAC"
+            AppleMusicWrapperManagerProvider.WrapperMode.AAC -> "Apple Music AAC"
+            AppleMusicWrapperManagerProvider.WrapperMode.DOLBY_ATMOS -> "Apple Music Dolby Atmos"
+        }
 
     override fun getUri(): Uri? = currentUri
 
@@ -185,6 +227,7 @@ class AppleMusicWrapperDataSource(
         val title: String?,
         val resourceName: String?,
         val highWorkerMode: Boolean,
+        val lowPowerMode: Boolean,
     ) {
         companion object {
             fun fromUri(uri: Uri): Request {
@@ -210,6 +253,7 @@ class AppleMusicWrapperDataSource(
                     title = uri.getQueryParameter(PARAM_TITLE),
                     resourceName = resourceName,
                     highWorkerMode = uri.getQueryParameter(PARAM_HIGH_WORKER_MODE)?.toBooleanStrictOrNull() ?: false,
+                    lowPowerMode = uri.getQueryParameter(PARAM_LOW_POWER_MODE)?.toBooleanStrictOrNull() ?: false,
                 )
             }
 
@@ -237,6 +281,7 @@ class AppleMusicWrapperDataSource(
                         wrapperSecure = uri.getQueryParameter(PARAM_SECURE)?.toBooleanStrictOrNull() ?: true,
                         audioMode = uri.getQueryParameter(PARAM_MODE).toWrapperMode(),
                         highWorkerMode = uri.getQueryParameter(PARAM_HIGH_WORKER_MODE)?.toBooleanStrictOrNull() ?: false,
+                        lowPowerMode = uri.getQueryParameter(PARAM_LOW_POWER_MODE)?.toBooleanStrictOrNull() ?: false,
                     ),
                 )
                 return fromUri(Uri.parse(resolved.mediaUri)).copy(resourceName = resourceName)
@@ -265,6 +310,9 @@ class AppleMusicWrapperDataSource(
         }
 
         fun withFreshM3u8(): Request {
+            if (mode != AppleMusicWrapperManagerProvider.WrapperMode.ALAC) {
+                return this
+            }
             val freshM3u8 = AppleMusicWrapperManagerProvider.getM3u8WithFallback(
                 adamId = adamId,
                 preferredHost = host,
@@ -281,7 +329,8 @@ class AppleMusicWrapperDataSource(
 
         fun toVirtualHlsRequest(): AppleMusicDecryptPipeline.VirtualHlsRequest {
             return AppleMusicDecryptPipeline.VirtualHlsRequest(
-                sessionKey = listOf(mediaId, adamId, mode.name, issuedAtMs ?: 0L, m3u8Url).joinToString("|"),
+                sessionKey = listOf(mediaId, adamId, mode.name, issuedAtMs ?: 0L, highWorkerMode, lowPowerMode, m3u8Url)
+                    .joinToString("|"),
                 mediaId = mediaId,
                 adamId = adamId,
                 m3u8Url = m3u8Url,
@@ -290,6 +339,7 @@ class AppleMusicWrapperDataSource(
                 mode = mode,
                 durationMs = durationMs,
                 highWorkerMode = highWorkerMode,
+                lowPowerMode = lowPowerMode,
             )
         }
 
@@ -310,14 +360,22 @@ class AppleMusicWrapperDataSource(
             if (highWorkerMode) {
                 builder.appendQueryParameter(PARAM_HIGH_WORKER_MODE, true.toString())
             }
+            if (lowPowerMode) {
+                builder.appendQueryParameter(PARAM_LOW_POWER_MODE, true.toString())
+            }
             return builder.build().toString()
         }
     }
 
     class Factory(
         private val client: OkHttpClient = defaultClient,
+        private val onVirtualHlsSegmentBitrate: ((mediaId: String, bitrate: Int, mediaStartMs: Long?, mediaEndMs: Long?) -> Unit)? = null,
     ) : DataSource.Factory {
-        override fun createDataSource(): DataSource = AppleMusicWrapperDataSource(client)
+        override fun createDataSource(): DataSource =
+            AppleMusicWrapperDataSource(
+                client = client,
+                onVirtualHlsSegmentBitrate = onVirtualHlsSegmentBitrate,
+            )
     }
 
     companion object {
@@ -338,6 +396,7 @@ class AppleMusicWrapperDataSource(
         private const val PARAM_PENDING = "pending"
         private const val PARAM_MODE = "mode"
         private const val PARAM_HIGH_WORKER_MODE = "highWorkerMode"
+        private const val PARAM_LOW_POWER_MODE = "lowPowerMode"
         private const val M3U8_REFRESH_AFTER_MS = 4 * 60 * 1000L
         private const val HLS_MASTER_RESOURCE = "master.m3u8"
         private const val HLS_MEDIA_RESOURCE = "media.m3u8"
@@ -363,26 +422,35 @@ class AppleMusicWrapperDataSource(
                 ?.firstOrNull()
                 ?.takeIf { it.isNotBlank() }
 
+        fun modeFromUri(uri: Uri): AppleMusicWrapperManagerProvider.WrapperMode =
+            uri.getQueryParameter(PARAM_MODE).toWrapperMode()
+
         fun toProgressiveStreamUri(
             uri: Uri,
             highWorkerMode: Boolean = false,
+            lowPowerMode: Boolean = false,
         ): Uri {
             if (!isAppleUri(uri)) return uri
             val mediaId = mediaIdFromUri(uri) ?: return uri
             val resolvedHighWorkerMode = highWorkerMode ||
                 (uri.getQueryParameter(PARAM_HIGH_WORKER_MODE)?.toBooleanStrictOrNull() ?: false)
+            val resolvedLowPowerMode = lowPowerMode ||
+                (uri.getQueryParameter(PARAM_LOW_POWER_MODE)?.toBooleanStrictOrNull() ?: false)
             val builder = Uri.Builder()
                 .scheme(SCHEME)
                 .authority(AUTHORITY)
                 .appendPath(mediaId)
             uri.queryParameterNames.forEach { name ->
-                if (name == PARAM_HIGH_WORKER_MODE) return@forEach
+                if (name == PARAM_HIGH_WORKER_MODE || name == PARAM_LOW_POWER_MODE) return@forEach
                 uri.getQueryParameters(name).forEach { value ->
                     builder.appendQueryParameter(name, value)
                 }
             }
             if (resolvedHighWorkerMode) {
                 builder.appendQueryParameter(PARAM_HIGH_WORKER_MODE, true.toString())
+            }
+            if (resolvedLowPowerMode) {
+                builder.appendQueryParameter(PARAM_LOW_POWER_MODE, true.toString())
             }
             return builder.build()
         }
@@ -398,6 +466,7 @@ class AppleMusicWrapperDataSource(
             wrapperSecure: Boolean = true,
             mode: AppleMusicWrapperManagerProvider.WrapperMode = AppleMusicWrapperManagerProvider.WrapperMode.ALAC,
             highWorkerMode: Boolean = false,
+            lowPowerMode: Boolean = false,
         ): String {
             val builder = Uri.Builder()
                 .scheme(SCHEME)
@@ -418,6 +487,9 @@ class AppleMusicWrapperDataSource(
             if (highWorkerMode) {
                 builder.appendQueryParameter(PARAM_HIGH_WORKER_MODE, true.toString())
             }
+            if (lowPowerMode) {
+                builder.appendQueryParameter(PARAM_LOW_POWER_MODE, true.toString())
+            }
             return builder.build().toString()
         }
 
@@ -431,6 +503,7 @@ class AppleMusicWrapperDataSource(
             durationMs: Long?,
             title: String?,
             highWorkerMode: Boolean = false,
+            lowPowerMode: Boolean = false,
         ): String {
             val builder = Uri.Builder()
                 .scheme(SCHEME)
@@ -447,6 +520,9 @@ class AppleMusicWrapperDataSource(
             title?.takeIf { it.isNotBlank() }?.let { builder.appendQueryParameter(PARAM_TITLE, it) }
             if (highWorkerMode) {
                 builder.appendQueryParameter(PARAM_HIGH_WORKER_MODE, true.toString())
+            }
+            if (lowPowerMode) {
+                builder.appendQueryParameter(PARAM_LOW_POWER_MODE, true.toString())
             }
             return builder.build().toString()
         }

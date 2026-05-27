@@ -8,6 +8,7 @@ package com.metrolist.music.apple
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONArray
 import org.json.JSONObject
 import timber.log.Timber
 import java.text.Normalizer
@@ -48,6 +49,7 @@ object AppleMusicSongResolver {
         val wrapperSecure: Boolean = true,
         val audioMode: AppleMusicWrapperManagerProvider.WrapperMode = AppleMusicWrapperManagerProvider.WrapperMode.ALAC,
         val highWorkerMode: Boolean = false,
+        val lowPowerMode: Boolean = false,
     )
 
     data class Resolved(
@@ -82,6 +84,12 @@ object AppleMusicSongResolver {
         val durationMs: Long?,
         val explicit: Boolean?,
         val url: String?,
+        val audioTraits: Set<String>,
+    )
+
+    private data class EnhancedHlsSelection(
+        val candidate: Candidate,
+        val url: String,
     )
 
     fun resolve(query: Query): Resolved {
@@ -91,25 +99,36 @@ object AppleMusicSongResolver {
             ?.takeIf { it.expiresAtMs > now + 30_000L }
             ?.let { return it }
 
-        val track = query.mediaId.toAppleAdamIdOrNull()
+        var track = query.mediaId.toAppleAdamIdOrNull()
             ?.let { query.toDirectCandidate(it) }
             ?: findBestTrack(query)
             ?: throw AppleMusicWrapperManagerProvider.WrapperManagerException(
                 "No Apple Music match found for ${query.title}"
             )
-        val wrapper = AppleMusicWrapperManagerProvider.getM3u8WithFallback(
-            adamId = track.adamId,
-            preferredHost = query.wrapperHost,
-            preferredSecure = query.wrapperSecure,
-            mode = query.audioMode,
-        )
+        val wrapper =
+            if (query.audioMode == AppleMusicWrapperManagerProvider.WrapperMode.ALAC) {
+                AppleMusicWrapperManagerProvider.getM3u8WithFallback(
+                    adamId = track.adamId,
+                    preferredHost = query.wrapperHost,
+                    preferredSecure = query.wrapperSecure,
+                    mode = query.audioMode,
+                )
+            } else {
+                val selection = resolveEnhancedHlsForMode(track, query)
+                track = selection.candidate
+                AppleMusicWrapperManagerProvider.WrapperM3u8(
+                    host = AppleMusicWrapperManagerProvider.normalizeHost(query.wrapperHost),
+                    secure = query.wrapperSecure,
+                    url = selection.url,
+                )
+            }
         val quality =
             if (query.audioMode == AppleMusicWrapperManagerProvider.WrapperMode.ALAC) {
                 runCatching {
                     AppleMusicDecryptPipeline.readAlacQualityMetadata(
                         client = client,
                         initialUrl = wrapper.url,
-                        preferFast = false,
+                        preferFast = true,
                     )
                 }.onFailure { error ->
                     Timber.tag(TAG).w(error, "Failed to read ALAC quality metadata for adamId=${track.adamId}")
@@ -128,6 +147,7 @@ object AppleMusicSongResolver {
             durationMs = query.durationMs ?: track.durationMs,
             title = track.title,
             highWorkerMode = query.highWorkerMode,
+            lowPowerMode = query.lowPowerMode,
         )
         return Resolved(
             mediaUri = mediaUri,
@@ -162,9 +182,12 @@ object AppleMusicSongResolver {
     }
 
     fun invalidate(mediaId: String) {
-        resolvedCache.keys
-            .filter { it.startsWith("$mediaId::") }
-            .forEach { resolvedCache.remove(it) }
+        val prefix = "$mediaId::"
+        for (key in resolvedCache.keys) {
+            if (key.startsWith(prefix)) {
+                resolvedCache.remove(key)
+            }
+        }
     }
 
     private fun findBestTrack(query: Query): Candidate? {
@@ -175,6 +198,84 @@ object AppleMusicSongResolver {
 
     private fun findAppleCatalogTrackByIsrc(query: Query): Candidate? {
         val isrc = query.isrc?.trim()?.uppercase(Locale.US)?.takeIf { it.isNotBlank() } ?: return null
+        return fetchAppleCatalogCandidatesByIsrc(query).asSequence()
+            .filter { candidate ->
+                candidate.isrc?.equals(isrc, ignoreCase = true) == true &&
+                    score(candidate, query) > REJECT_SCORE
+            }
+            .maxWithOrNull(
+                compareBy<Candidate> { score(it, query) }
+                    .thenBy { if (it.explicit == true) 1 else 0 }
+            )
+    }
+
+    private fun resolveEnhancedHlsForMode(
+        primary: Candidate,
+        query: Query,
+    ): EnhancedHlsSelection {
+        val failures = mutableListOf<String>()
+        findPlayableEnhancedHls(primary, query, failures)?.let { return it }
+
+        val candidates = buildList {
+            addAll(fetchAppleCatalogCandidatesByIsrc(query))
+            searchTerms(query).forEach { term ->
+                addAll(fetchAppleCatalogCandidates(query, term))
+            }
+        }
+            .asSequence()
+            .filter { it.adamId != primary.adamId }
+            .distinctBy { it.adamId }
+            .map { candidate -> candidate to score(candidate, query) }
+            .filter { (_, score) -> score >= 60 }
+            .sortedWith(
+                compareByDescending<Pair<Candidate, Int>> { it.second }
+                    .thenByDescending { if (it.first.supportsAudioMode(query.audioMode)) 1 else 0 }
+                    .thenByDescending { if (it.first.explicit == true) 1 else 0 }
+            )
+            .map { it.first }
+            .take(8)
+            .toList()
+
+        for (candidate in candidates) {
+            findPlayableEnhancedHls(candidate, query, failures)?.let { return it }
+        }
+
+        val detail = failures
+            .distinct()
+            .take(4)
+            .joinToString("; ")
+            .takeIf { it.isNotBlank() }
+            ?.let { ": $it" }
+            .orEmpty()
+        throw AppleMusicWrapperManagerProvider.WrapperManagerException(
+            "${query.audioMode.title} enhanced HLS did not expose a playable ${query.audioMode.title} media playlist for ${query.title}$detail"
+        )
+    }
+
+    private fun findPlayableEnhancedHls(
+        candidate: Candidate,
+        query: Query,
+        failures: MutableList<String>,
+    ): EnhancedHlsSelection? {
+        val enhancedHls = fetchEnhancedHls(candidate.adamId, query)
+        if (enhancedHls.isNullOrBlank()) {
+            failures += "${candidate.adamId}: no enhanced HLS"
+            return null
+        }
+        val hasMode = AppleMusicDecryptPipeline.hasMediaPlaylistForMode(
+            client = client,
+            initialUrl = enhancedHls,
+            mode = query.audioMode,
+        )
+        if (!hasMode) {
+            failures += "${candidate.adamId}: no ${query.audioMode.title} playlist"
+            return null
+        }
+        return EnhancedHlsSelection(candidate, enhancedHls)
+    }
+
+    private fun fetchAppleCatalogCandidatesByIsrc(query: Query): List<Candidate> {
+        val isrc = query.isrc?.trim()?.uppercase(Locale.US)?.takeIf { it.isNotBlank() } ?: return emptyList()
         val storefront = query.storefront.lowercase(Locale.US)
         val url = "$AMP_BASE_URL/v1/catalog/$storefront/songs".toHttpUrl().newBuilder()
             .addQueryParameter("filter[isrc]", isrc)
@@ -188,17 +289,14 @@ object AppleMusicSongResolver {
             .build()
         return runCatching {
             client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return@use null
-                val body = response.body ?: return@use null
-                val data = JSONObject(body.string()).optJSONArray("data") ?: return@use null
+                if (!response.isSuccessful) return@use emptyList()
+                val body = response.body ?: return@use emptyList()
+                val data = JSONObject(body.string()).optJSONArray("data") ?: return@use emptyList()
                 (0 until data.length())
                     .mapNotNull { index -> data.optJSONObject(index)?.toAppleCatalogCandidate() }
-                    .firstOrNull { candidate ->
-                        candidate.isrc?.equals(isrc, ignoreCase = true) == true &&
-                            score(candidate, query) > REJECT_SCORE
-                    }
+                    .filter { candidate -> candidate.isrc?.equals(isrc, ignoreCase = true) == true }
             }
-        }.getOrNull()
+        }.getOrDefault(emptyList())
     }
 
     private fun findBestAppleCatalogTrack(query: Query): Candidate? {
@@ -258,6 +356,51 @@ object AppleMusicSongResolver {
                 }
             }
         }.getOrElse { emptyList() }
+    }
+
+    private fun fetchEnhancedHls(
+        adamId: String,
+        query: Query,
+    ): String? {
+        val storefront = query.storefront.lowercase(Locale.US)
+        val url = "$AMP_BASE_URL/v1/catalog/$storefront/songs/$adamId".toHttpUrl().newBuilder()
+            .addQueryParameter("extend", "extendedAssetUrls")
+            .addQueryParameter("include", "albums,explicit")
+            .build()
+        val request = Request.Builder()
+            .url(url)
+            .header("Authorization", "Bearer $APPLE_MUSIC_TOKEN")
+            .header("Origin", "https://music.apple.com")
+            .header("Referer", "https://music.apple.com/")
+            .header("User-Agent", "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 Chrome/147 Mobile Safari/537.36")
+            .build()
+        return runCatching {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    throw AppleMusicWrapperManagerProvider.WrapperManagerException(
+                        "Apple Music catalog enhanced HLS lookup failed with HTTP ${response.code}"
+                    )
+                }
+                val body = response.body
+                    ?: throw AppleMusicWrapperManagerProvider.WrapperManagerException(
+                        "Apple Music catalog enhanced HLS lookup returned no body"
+                    )
+                val data = JSONObject(body.string()).optJSONArray("data")
+                    ?: throw AppleMusicWrapperManagerProvider.WrapperManagerException(
+                        "Apple Music catalog enhanced HLS lookup returned no song data"
+                    )
+                (0 until data.length())
+                    .asSequence()
+                    .mapNotNull { index -> data.optJSONObject(index) }
+                    .firstOrNull { it.optString("id") == adamId }
+                    ?.optJSONObject("attributes")
+                    ?.optJSONObject("extendedAssetUrls")
+                    ?.optString("enhancedHls")
+                    ?.takeIf { it.isNotBlank() }
+            }
+        }.onFailure { error ->
+            Timber.tag(TAG).w(error, "Failed to fetch enhanced HLS for ${query.audioMode.title} adamId=$adamId")
+        }.getOrNull()
     }
 
     private fun fetchItunesCandidates(
@@ -327,6 +470,7 @@ object AppleMusicSongResolver {
                 else -> null
             },
             url = attributes.optString("url").takeIf { it.isNotBlank() },
+            audioTraits = attributes.optJSONArray("audioTraits").toStringSet(),
         )
     }
 
@@ -349,6 +493,7 @@ object AppleMusicSongResolver {
                 }
             },
             url = optString("trackViewUrl").takeIf { it.isNotBlank() },
+            audioTraits = emptySet(),
         )
     }
 
@@ -415,8 +560,32 @@ object AppleMusicSongResolver {
                 null -> Unit
             }
         }
+        score += candidate.audioModeScore(query.audioMode)
         return score
     }
+
+    private fun Candidate.audioModeScore(mode: AppleMusicWrapperManagerProvider.WrapperMode): Int =
+        when (mode) {
+            AppleMusicWrapperManagerProvider.WrapperMode.ALAC -> 0
+            AppleMusicWrapperManagerProvider.WrapperMode.AAC ->
+                if (supportsAudioMode(mode)) 20 else 0
+            AppleMusicWrapperManagerProvider.WrapperMode.DOLBY_ATMOS ->
+                if (supportsAudioMode(mode)) 90 else 0
+        }
+
+    private fun Candidate.supportsAudioMode(mode: AppleMusicWrapperManagerProvider.WrapperMode): Boolean =
+        when (mode) {
+            AppleMusicWrapperManagerProvider.WrapperMode.ALAC -> true
+            AppleMusicWrapperManagerProvider.WrapperMode.AAC ->
+                audioTraits.isEmpty() || audioTraits.any { trait ->
+                    trait.equals("lossy-stereo", ignoreCase = true)
+                }
+            AppleMusicWrapperManagerProvider.WrapperMode.DOLBY_ATMOS ->
+                audioTraits.any { trait ->
+                    trait.equals("atmos", ignoreCase = true) ||
+                        trait.equals("spatial", ignoreCase = true)
+                }
+        }
 
     private fun hasBlockedVariant(
         candidate: Candidate,
@@ -460,6 +629,7 @@ object AppleMusicSongResolver {
             wrapperSecure.toString(),
             audioMode.name,
             highWorkerMode.toString(),
+            lowPowerMode.toString(),
         ).joinToString("::")
     }
 
@@ -480,6 +650,7 @@ object AppleMusicSongResolver {
             durationMs = durationMs,
             explicit = explicit,
             url = null,
+            audioTraits = emptySet(),
         )
 
     private fun Candidate.toCandidateMetadata(): CandidateMetadata =
@@ -540,5 +711,12 @@ object AppleMusicSongResolver {
         val first = split(' ').filter { it.length > 1 }.toSet()
         val second = other.split(' ').filter { it.length > 1 }.toSet()
         return first.intersect(second).size
+    }
+
+    private fun JSONArray?.toStringSet(): Set<String> {
+        if (this == null) return emptySet()
+        return (0 until length())
+            .mapNotNull { index -> optString(index).takeIf { it.isNotBlank() } }
+            .toSet()
     }
 }

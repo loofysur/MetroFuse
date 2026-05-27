@@ -7,6 +7,7 @@ package com.metrolist.music.providers
 
 import com.metrolist.music.apple.AppleMusicWrapperManagerProvider
 import com.metrolist.music.deezer.DeezerAudioProvider
+import com.metrolist.music.soundcloud.SoundCloudAudioProvider
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -107,11 +108,18 @@ object ProviderHealthChecker {
                 detail = "Public SoundCloud frontend",
             ),
             getTarget(
+                id = "soundcloud_maid",
+                group = "SoundCloud",
+                name = "SoundCloud Maid",
+                endpoint = "${SoundCloudAudioProvider.MAID_BASE_URL}/search?q=test&type=tracks",
+                detail = "Primary SoundCloud frontend metadata backend",
+            ),
+            getTarget(
                 id = "soundcloud_squid",
                 group = "SoundCloud",
                 name = "SoundCloud Squid",
-                endpoint = "https://sc.squid.wtf/api/soundcloud/get-client-id",
-                detail = "Client ID and stream helper",
+                endpoint = "${SoundCloudAudioProvider.SQUID_BASE_URL}/api/soundcloud/get-client-id",
+                detail = "Secondary SoundCloud client ID and stream helper",
             ),
             getTarget(
                 id = "deezer_api",

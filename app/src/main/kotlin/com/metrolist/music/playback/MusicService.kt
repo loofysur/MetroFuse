@@ -112,6 +112,7 @@ import com.metrolist.music.constants.AppleMusicFallbackEnabledKey
 import com.metrolist.music.constants.AppleMusicAudioQuality
 import com.metrolist.music.constants.AppleMusicAudioQualityKey
 import com.metrolist.music.constants.AppleMusicForceAlacKey
+import com.metrolist.music.constants.AppleMusicLowPowerKey
 import com.metrolist.music.constants.AppleMusicSuperFastKey
 import com.metrolist.music.constants.AppleMusicWrapperHostKey
 import com.metrolist.music.constants.AppleMusicWrapperSecureKey
@@ -1027,7 +1028,7 @@ class MusicService :
                     runBlocking(Dispatchers.IO) {
                         try {
                             playerCache.removeResource(mediaId)
-                            playerCache.removeResource(appleWrapperCacheKey(mediaId))
+                            appleWrapperCacheKeys(mediaId).forEach(playerCache::removeResource)
                             playerCache.removeResource(qobuzFallbackCacheKey(mediaId))
                             playerCache.removeResource(tidalFallbackCacheKey(mediaId))
                             playerCache.removeResource(deezerFallbackCacheKey(mediaId))
@@ -1036,7 +1037,7 @@ class MusicService :
                             playerCache.removeResource(directHttpAudioCacheKey(mediaId))
                             playerCache.removeResource(youtubeFallbackCacheKey(mediaId))
                             downloadCache.removeResource(mediaId)
-                            downloadCache.removeResource(appleWrapperCacheKey(mediaId))
+                            appleWrapperCacheKeys(mediaId).forEach(downloadCache::removeResource)
                             downloadCache.removeResource(qobuzFallbackCacheKey(mediaId))
                             downloadCache.removeResource(tidalFallbackCacheKey(mediaId))
                             downloadCache.removeResource(deezerFallbackCacheKey(mediaId))
@@ -3520,7 +3521,7 @@ class MusicService :
         // Clear player cache
         try {
             playerCache.removeResource(mediaId)
-            playerCache.removeResource(appleWrapperCacheKey(mediaId))
+            appleWrapperCacheKeys(mediaId).forEach(playerCache::removeResource)
             playerCache.removeResource(qobuzFallbackCacheKey(mediaId))
             playerCache.removeResource(tidalFallbackCacheKey(mediaId))
             playerCache.removeResource(deezerFallbackCacheKey(mediaId))
@@ -3529,7 +3530,7 @@ class MusicService :
             playerCache.removeResource(directHttpAudioCacheKey(mediaId))
             playerCache.removeResource(youtubeFallbackCacheKey(mediaId))
             downloadCache.removeResource(mediaId)
-            downloadCache.removeResource(appleWrapperCacheKey(mediaId))
+            appleWrapperCacheKeys(mediaId).forEach(downloadCache::removeResource)
             downloadCache.removeResource(qobuzFallbackCacheKey(mediaId))
             downloadCache.removeResource(tidalFallbackCacheKey(mediaId))
             downloadCache.removeResource(deezerFallbackCacheKey(mediaId))
@@ -4744,7 +4745,7 @@ class MusicService :
         val value = toString()
         return when {
             AppleMusicWrapperDataSource.isAppleUri(this) -> "apple music"
-            value.startsWith(appleWrapperCacheKey(""), ignoreCase = true) -> "apple music"
+            isAppleWrapperCacheKey(value) -> "apple music"
             value.startsWith(qobuzFallbackCacheKey(""), ignoreCase = true) -> "qobuz"
             value.startsWith(tidalFallbackCacheKey(""), ignoreCase = true) -> "tidal"
             value.startsWith(deezerFallbackCacheKey(""), ignoreCase = true) -> "deezer"
@@ -4829,6 +4830,7 @@ class MusicService :
         val appleMusicForceAlac = dataStore.get(AppleMusicForceAlacKey, false)
         val appleMusicAudioMode = currentAppleMusicWrapperMode()
         val appleMusicSuperFast = dataStore.get(AppleMusicSuperFastKey, false)
+        val appleMusicLowPower = dataStore.get(AppleMusicLowPowerKey, false)
         val appleWrapperHost = dataStore.get(
             AppleMusicWrapperHostKey,
             AppleMusicWrapperManagerProvider.DEFAULT_HOST,
@@ -4862,6 +4864,7 @@ class MusicService :
             "appleForceAlac=$appleMusicForceAlac",
             "appleAudioMode=${appleMusicAudioMode.name}",
             "appleSuperFast=$appleMusicSuperFast",
+            "appleLowPower=$appleMusicLowPower",
             "appleWrapperHost=${appleWrapperHost.hashCode()}",
             "appleWrapperSecure=$appleWrapperSecure",
             "tidalQuality=${tidalQuality.name}",
@@ -4925,7 +4928,16 @@ class MusicService :
         val resolvingFactory =
             ResolvingDataSource.Factory(
             DeezerAudioAwareDataSourceFactory(
-                AppleMusicAwareDataSourceFactory(createCacheDataSource()),
+                AppleMusicAwareDataSourceFactory(
+                    normalFactory = createCacheDataSource(),
+                    appleFactory = AppleMusicWrapperDataSource.Factory(
+                        onVirtualHlsSegmentBitrate = { mediaId, bitrate, mediaStartMs, mediaEndMs ->
+                            if (isLivePlaybackBitrateCollectionEnabled()) {
+                                recordLivePlaybackBitrateSample(mediaId, mediaStartMs, mediaEndMs, bitrate)
+                            }
+                        },
+                    ),
+                ),
             ),
         ) { dataSpec ->
             val explicitProviderMediaId =
@@ -4968,23 +4980,9 @@ class MusicService :
             val isPendingTidalDashRequest = dataSpec.uri.isPendingTidalDashRequest()
 
             if (AppleMusicWrapperDataSource.isAppleUri(dataSpec.uri)) {
-                val applePrimaryForUri =
-                    isProviderFirstInPlaybackOrder(
-                        mediaId = mediaId,
-                        provider = AudioProviderOrderItem.APPLE_MUSIC,
-                        skipAppleForThisAttempt = skipAppleOnceMediaIds.contains(mediaId),
-                    )
-                if (!applePrimaryForUri) {
-                    clearResolvedStreamCache(mediaId)
-                    return@Factory dataSpec
-                        .buildUpon()
-                        .setUri(mediaId.toUri())
-                        .setKey(mediaId)
-                        .build()
-                }
                 return@Factory dataSpec
                     .buildUpon()
-                    .setKey(appleWrapperCacheKey(mediaId))
+                    .setKey(appleWrapperCacheKey(mediaId, AppleMusicWrapperDataSource.modeFromUri(dataSpec.uri)))
                     .build()
             }
             if (DeezerAudioDataSource.isDeezerUri(dataSpec.uri)) {
@@ -5129,7 +5127,7 @@ class MusicService :
             upstreamFactory = ResilientPlaybackDataSourceFactory(resolvingFactory),
             isEnabled = ::isLivePlaybackBitrateCollectionEnabled,
             mediaIdResolver = ::liveBitrateMediaIdFromDataSpec,
-            isFlacCandidate = ::isLiveFlacBitrateCandidate,
+            isParserCandidate = ::isLivePlaybackParserCandidate,
             sampleRateProvider = ::liveBitrateSampleRate,
             onBitrate = { mediaId, bitrate, mediaStartMs, mediaEndMs ->
                 recordLivePlaybackBitrateSample(mediaId, mediaStartMs, mediaEndMs, bitrate)
@@ -5152,7 +5150,7 @@ class MusicService :
                 ?.let(::mediaIdFromDataSpecKey)
                 ?.takeIf { it.isNotBlank() }
 
-    private fun isLiveFlacBitrateCandidate(
+    private fun isLivePlaybackParserCandidate(
         dataSpec: DataSpec,
         mediaId: String?,
     ): Boolean {
@@ -5163,13 +5161,15 @@ class MusicService :
                     currentPlaybackFormat.value?.takeIf { it.id == id }
                         ?: songUrlCache[id]?.format
                 }
-        if (format?.isFlacFormat() == true) return true
+        if (format?.isFlacFormat() == true || format?.isAppleWrapperFormat() == true) return true
         if (format != null && !format.isProviderFallbackFormat()) return false
 
         val key = dataSpec.key.orEmpty().lowercase(Locale.US)
         val uri = dataSpec.uri.toString().lowercase(Locale.US)
         return "flac" in key ||
             "flac" in uri.substringBefore('?') ||
+            isAppleWrapperCacheKey(key) ||
+            AppleMusicWrapperDataSource.isAppleUri(dataSpec.uri) ||
             key.startsWith(QOBUZ_FALLBACK_CACHE_PREFIX) ||
             isTidalFallbackCacheKey(key) ||
             key.startsWith(DEEZER_FALLBACK_CACHE_PREFIX) ||
@@ -5188,7 +5188,7 @@ class MusicService :
     private fun clearResolvedStreamCache(mediaId: String) {
         songUrlCache.remove(mediaId)
         playerCache.removeResource(mediaId)
-        playerCache.removeResource(appleWrapperCacheKey(mediaId))
+        appleWrapperCacheKeys(mediaId).forEach(playerCache::removeResource)
         playerCache.removeResource(qobuzFallbackCacheKey(mediaId))
         playerCache.removeResource(tidalFallbackCacheKey(mediaId))
         playerCache.removeResource(deezerFallbackCacheKey(mediaId))
@@ -5196,7 +5196,7 @@ class MusicService :
         playerCache.removeResource(instagramFallbackCacheKey(mediaId))
         playerCache.removeResource(youtubeFallbackCacheKey(mediaId))
         downloadCache.removeResource(mediaId)
-        downloadCache.removeResource(appleWrapperCacheKey(mediaId))
+        appleWrapperCacheKeys(mediaId).forEach(downloadCache::removeResource)
         downloadCache.removeResource(qobuzFallbackCacheKey(mediaId))
         downloadCache.removeResource(tidalFallbackCacheKey(mediaId))
         downloadCache.removeResource(deezerFallbackCacheKey(mediaId))
@@ -5392,6 +5392,7 @@ class MusicService :
         val appleMusicForceAlac = dataStore.get(AppleMusicForceAlacKey, false)
         val appleMusicAudioMode = currentAppleMusicWrapperMode()
         val appleMusicSuperFast = dataStore.get(AppleMusicSuperFastKey, false)
+        val appleMusicLowPower = dataStore.get(AppleMusicLowPowerKey, false)
         val appleWrapperHost = dataStore.get(AppleMusicWrapperHostKey, AppleMusicWrapperManagerProvider.DEFAULT_HOST)
         val appleWrapperSecure = dataStore.get(AppleMusicWrapperSecureKey, true)
         val tidalQuality = dataStore.get(TidalAudioQualityKey).toEnum(TidalAudioQuality.AAC_320)
@@ -5427,7 +5428,7 @@ class MusicService :
             PlaybackStreamResolution(
                 uri = mediaUri,
                 expiresAtMs = expiresAtMs,
-                cacheKey = appleWrapperCacheKey(mediaId),
+                cacheKey = appleWrapperCacheKey(mediaId, audioMode),
                 format = appleWrapperFormat(mediaId, bitrate = bitrate, sampleRate = sampleRate, audioMode = audioMode),
                 mimeType = MimeTypes.APPLICATION_M3U8,
             )
@@ -5659,6 +5660,7 @@ class MusicService :
                                 wrapperSecure = appleWrapperSecure,
                                 audioMode = appleMusicAudioMode,
                                 highWorkerMode = appleMusicSuperFast,
+                                lowPowerMode = appleMusicLowPower,
                             ),
                         )
                     }
@@ -6300,6 +6302,7 @@ class MusicService :
         wrapperSecure: Boolean = true,
         audioMode: AppleMusicWrapperManagerProvider.WrapperMode = AppleMusicWrapperManagerProvider.WrapperMode.ALAC,
         highWorkerMode: Boolean = false,
+        lowPowerMode: Boolean = false,
     ): AppleMusicSongResolver.Query {
         val queuedMetadata = metadataOverride ?: if (song == null) currentQueueMetadata(mediaId) else null
         val title = song?.song?.title ?: queuedMetadata?.title ?: mediaId
@@ -6328,6 +6331,7 @@ class MusicService :
             wrapperSecure = wrapperSecure,
             audioMode = audioMode,
             highWorkerMode = highWorkerMode,
+            lowPowerMode = lowPowerMode,
         )
     }
 
@@ -6456,6 +6460,7 @@ class MusicService :
         val appleWrapperSecure = dataStore.get(AppleMusicWrapperSecureKey, true)
         val appleMusicAudioMode = currentAppleMusicWrapperMode()
         val appleMusicSuperFast = dataStore.get(AppleMusicSuperFastKey, false)
+        val appleMusicLowPower = dataStore.get(AppleMusicLowPowerKey, false)
         val pendingAppleUri = AppleMusicWrapperDataSource.buildPendingUri(
             mediaId = mediaId,
             title = pendingMetadata.title,
@@ -6467,8 +6472,9 @@ class MusicService :
             wrapperSecure = appleWrapperSecure,
             mode = appleMusicAudioMode,
             highWorkerMode = appleMusicSuperFast,
+            lowPowerMode = appleMusicLowPower,
         )
-        return withResolvedPlaybackStream(pendingAppleUri, appleWrapperCacheKey(mediaId))
+        return withResolvedPlaybackStream(pendingAppleUri, appleWrapperCacheKey(mediaId, appleMusicAudioMode))
     }
 
     private fun MediaItem.buildPendingTidalRoute(
@@ -6520,7 +6526,7 @@ class MusicService :
             }
             return mediaItem.withResolvedPlaybackStream(
                 uri = localConfiguration.uri.toString(),
-                cacheKey = appleWrapperCacheKey(mediaId),
+                cacheKey = appleWrapperCacheKey(mediaId, AppleMusicWrapperDataSource.modeFromUri(localConfiguration.uri)),
             )
         }
 
@@ -6604,6 +6610,11 @@ class MusicService :
         } else {
             cacheKey
         }
+        val isBarePlaybackId =
+            resolvedUri.scheme.isNullOrBlank() &&
+                resolvedUri.toString().isNotBlank() &&
+                !resolvedUri.toString().contains('/') &&
+                !resolvedUri.toString().contains('\\')
         val isSoundCloudHls =
             resolvedUri.isHierarchical &&
                 resolvedUri.getQueryParameter(SoundCloudAudioProvider.STREAM_HLS_MARKER_QUERY) == "1"
@@ -6613,6 +6624,7 @@ class MusicService :
             .setMimeType(
                 when {
                     AppleMusicWrapperDataSource.isAppleUri(resolvedUri) || isSoundCloudHls -> MimeTypes.APPLICATION_M3U8
+                    isBarePlaybackId -> mimeType
                     else -> mimeType ?: localConfiguration?.mimeType
                 },
             )
@@ -8094,8 +8106,11 @@ class MusicService :
     }
 
     private fun FormatEntity.isAppleAlacFormat(): Boolean =
+        isAppleWrapperFormat()
+
+    private fun FormatEntity.isAppleWrapperFormat(): Boolean =
         itag == APPLE_MUSIC_WRAPPER_ITAG ||
-            codecs?.contains("alac", ignoreCase = true) == true ||
+            codecs.contains("alac", ignoreCase = true) ||
             mimeType.contains("alac", ignoreCase = true)
 
     private fun FormatEntity.isFlacFormat(): Boolean =
@@ -8630,7 +8645,23 @@ class MusicService :
         private const val LEGACY_ALAC_PLACEHOLDER_BPS = 4_000_000
         private const val DEBUG_DISABLE_APPLE_ALAC_PROVIDER_FALLBACK = false
 
-        private fun appleWrapperCacheKey(mediaId: String) = "$APPLE_WRAPPER_CACHE_PREFIX$mediaId"
+        private fun appleWrapperCacheKey(
+            mediaId: String,
+            audioMode: AppleMusicWrapperManagerProvider.WrapperMode = AppleMusicWrapperManagerProvider.WrapperMode.ALAC,
+        ): String =
+            if (audioMode == AppleMusicWrapperManagerProvider.WrapperMode.ALAC) {
+                "$APPLE_WRAPPER_CACHE_PREFIX$mediaId"
+            } else {
+                "$APPLE_WRAPPER_CACHE_PREFIX${audioMode.idSuffix}:$mediaId"
+            }
+
+        private fun appleWrapperCacheKeys(mediaId: String): List<String> =
+            AppleMusicWrapperManagerProvider.WrapperMode.entries.map { mode ->
+                appleWrapperCacheKey(mediaId, mode)
+            }
+
+        private fun isAppleWrapperCacheKey(key: String): Boolean =
+            key.startsWith(APPLE_WRAPPER_CACHE_PREFIX)
 
         private fun qobuzFallbackCacheKey(mediaId: String) = "$QOBUZ_FALLBACK_CACHE_PREFIX$mediaId"
 
@@ -8736,9 +8767,19 @@ class MusicService :
                 null
             }
 
+        private fun mediaIdFromAppleWrapperCacheKey(key: String): String? {
+            if (!isAppleWrapperCacheKey(key)) return null
+            val value = key.removePrefix(APPLE_WRAPPER_CACHE_PREFIX)
+            val modePrefix = AppleMusicWrapperManagerProvider.WrapperMode.entries
+                .map { "${it.idSuffix}:" }
+                .firstOrNull(value::startsWith)
+            return value
+                .let { if (modePrefix == null) it else it.removePrefix(modePrefix) }
+                .takeIf { it.isNotBlank() }
+        }
+
         private fun mediaIdFromDataSpecKey(key: String): String? =
-            key
-                .removePrefix(APPLE_WRAPPER_CACHE_PREFIX)
+            mediaIdFromAppleWrapperCacheKey(key) ?: key
                 .removePrefix(OLD_QOBUZ_FALLBACK_CACHE_PREFIX)
                 .removePrefix(QOBUZ_FALLBACK_CACHE_PREFIX)
                 .removePrefix(TIDAL_FALLBACK_CACHE_PREFIX)

@@ -23,23 +23,31 @@ object AppleMusicDecryptPipeline {
     private const val USER_AGENT = "Echo-TidalPlus/AppleMusicWrapperManager"
     private const val PREFETCH_KEY = "skd://itunes.apple.com/P000000000/s1/e1"
     private const val KEY_SUFFIX_DEFAULT = "c6"
-    private const val DEFAULT_PREFETCH_WINDOW_SEGMENTS = 3
-    private const val DEFAULT_PREFETCH_CONCURRENCY = 2
-    private const val DEFAULT_STARTUP_PREFETCH_WINDOW_SEGMENTS = 2
-    private const val DEFAULT_STARTUP_READY_SEGMENTS = 0
-    private const val HIGH_PREFETCH_WINDOW_SEGMENTS = 5
-    private const val HIGH_PREFETCH_CONCURRENCY = 3
-    private const val HIGH_STARTUP_PREFETCH_WINDOW_SEGMENTS = 3
-    private const val HIGH_STARTUP_READY_SEGMENTS = 0
-    private const val MAX_ROLLING_CACHE_BYTES = 8 * 1024 * 1024
-    private const val MAX_ENCRYPTED_SEGMENT_CACHE_BYTES = 4 * 1024 * 1024
+    private const val DEFAULT_PREFETCH_WINDOW_SEGMENTS = 5
+    private const val DEFAULT_PREFETCH_CONCURRENCY = 3
+    private const val DEFAULT_STARTUP_PREFETCH_WINDOW_SEGMENTS = 3
+    private const val DEFAULT_STARTUP_READY_SEGMENTS = 1
+    private const val LOW_POWER_PREFETCH_WINDOW_SEGMENTS = 2
+    private const val LOW_POWER_PREFETCH_CONCURRENCY = 1
+    private const val LOW_POWER_STARTUP_PREFETCH_WINDOW_SEGMENTS = 1
+    private const val LOW_POWER_STARTUP_READY_SEGMENTS = 0
+    private const val HIGH_PREFETCH_WINDOW_SEGMENTS = 8
+    private const val HIGH_PREFETCH_CONCURRENCY = 4
+    private const val HIGH_STARTUP_PREFETCH_WINDOW_SEGMENTS = 4
+    private const val HIGH_STARTUP_READY_SEGMENTS = 1
+    private const val DEFAULT_MAX_ROLLING_CACHE_BYTES = 16 * 1024 * 1024
+    private const val LOW_POWER_MAX_ROLLING_CACHE_BYTES = 4 * 1024 * 1024
+    private const val HIGH_MAX_ROLLING_CACHE_BYTES = 24 * 1024 * 1024
+    private const val MAX_ENCRYPTED_SEGMENT_CACHE_BYTES = 8 * 1024 * 1024
     private const val SEGMENT_SLOW_MS = 4_000L
-    private const val SEGMENT_TIMEOUT_MS = 10_000L
+    private const val SEGMENT_TIMEOUT_MS = 15_000L
     private const val SEGMENT_INTEGRITY_RETRY_COUNT = 2
     private const val CBCS_BLOCK_SIZE = 16
     private const val ALAC_TYPE_END = 7
     private const val STARTUP_SLOW_MS = 8_000L
-    private const val STARTUP_TIMEOUT_MS = 12_000L
+    private const val STARTUP_TIMEOUT_MS = 15_000L
+    private const val NON_ALAC_STARTUP_SLOW_MS = 12_000L
+    private const val NON_ALAC_STARTUP_TIMEOUT_MS = 35_000L
     private const val TRACE_TAG = "AppleALAC"
     private const val VIRTUAL_HLS_MASTER_RESOURCE = "master.m3u8"
     private const val VIRTUAL_HLS_MEDIA_RESOURCE = "media.m3u8"
@@ -48,10 +56,71 @@ object AppleMusicDecryptPipeline {
     private const val VIRTUAL_HLS_SEGMENT_SUFFIX = ".m4s"
     private const val VIRTUAL_HLS_SESSION_TTL_MS = 2 * 60 * 1000L
     private const val MAX_VIRTUAL_HLS_SESSIONS = 2
+    private const val SENC_USE_SUBSAMPLE_ENCRYPTION = 0x2
+    private val PIFF_SENC_UUID = byteArrayOf(
+        0xa2.toByte(), 0x39, 0x4f, 0x52,
+        0x5a, 0x9b.toByte(), 0x4f, 0x14,
+        0xa2.toByte(), 0x44, 0x6c, 0x42,
+        0x7c, 0x64, 0x8d.toByte(), 0xf4.toByte(),
+    )
     private val segmentSampleCountCache = ConcurrentHashMap<String, Int>()
     private val segmentLengthCache = ConcurrentHashMap<String, Long>()
     private val encryptedSegmentCache = ConcurrentHashMap<String, ByteArray>()
     private val virtualHlsSessions = ConcurrentHashMap<String, AppleMusicAlacVirtualHlsSession>()
+
+    private data class AlacWorkerProfile(
+        val prefetchWindow: Int,
+        val prefetchConcurrency: Int,
+        val startupPrefetchWindow: Int,
+        val startupReadySegments: Int,
+        val maxRollingCacheBytes: Int,
+    )
+
+    private fun workerProfile(
+        highWorkerMode: Boolean,
+        lowPowerMode: Boolean,
+    ): AlacWorkerProfile =
+        when {
+            lowPowerMode -> AlacWorkerProfile(
+                prefetchWindow = LOW_POWER_PREFETCH_WINDOW_SEGMENTS,
+                prefetchConcurrency = LOW_POWER_PREFETCH_CONCURRENCY,
+                startupPrefetchWindow = LOW_POWER_STARTUP_PREFETCH_WINDOW_SEGMENTS,
+                startupReadySegments = LOW_POWER_STARTUP_READY_SEGMENTS,
+                maxRollingCacheBytes = LOW_POWER_MAX_ROLLING_CACHE_BYTES,
+            )
+
+            highWorkerMode -> AlacWorkerProfile(
+                prefetchWindow = HIGH_PREFETCH_WINDOW_SEGMENTS,
+                prefetchConcurrency = HIGH_PREFETCH_CONCURRENCY,
+                startupPrefetchWindow = HIGH_STARTUP_PREFETCH_WINDOW_SEGMENTS,
+                startupReadySegments = HIGH_STARTUP_READY_SEGMENTS,
+                maxRollingCacheBytes = HIGH_MAX_ROLLING_CACHE_BYTES,
+            )
+
+            else -> AlacWorkerProfile(
+                prefetchWindow = DEFAULT_PREFETCH_WINDOW_SEGMENTS,
+                prefetchConcurrency = DEFAULT_PREFETCH_CONCURRENCY,
+                startupPrefetchWindow = DEFAULT_STARTUP_PREFETCH_WINDOW_SEGMENTS,
+                startupReadySegments = DEFAULT_STARTUP_READY_SEGMENTS,
+                maxRollingCacheBytes = DEFAULT_MAX_ROLLING_CACHE_BYTES,
+            )
+        }
+
+    private fun workerProfile(
+        mode: AppleMusicWrapperManagerProvider.WrapperMode,
+        highWorkerMode: Boolean,
+        lowPowerMode: Boolean,
+    ): AlacWorkerProfile {
+        val base = workerProfile(highWorkerMode, lowPowerMode)
+        if (mode == AppleMusicWrapperManagerProvider.WrapperMode.ALAC) return base
+        return base.copy(
+            prefetchWindow = 2,
+            prefetchConcurrency = 1,
+            startupPrefetchWindow = 1,
+            startupReadySegments = 0,
+            maxRollingCacheBytes = min(base.maxRollingCacheBytes, LOW_POWER_MAX_ROLLING_CACHE_BYTES),
+        )
+    }
 
     class AlacStartupTimeoutException(message: String, cause: Throwable? = null) : IOException(message, cause)
     class AlacSegmentTimeoutException(message: String, cause: Throwable? = null) : IOException(message, cause)
@@ -130,6 +199,14 @@ object AppleMusicDecryptPipeline {
         val mode: AppleMusicWrapperManagerProvider.WrapperMode,
         val durationMs: Long?,
         val highWorkerMode: Boolean,
+        val lowPowerMode: Boolean,
+    )
+
+    data class VirtualHlsResource(
+        val bytes: ByteArray,
+        val mediaStartMs: Long? = null,
+        val mediaEndMs: Long? = null,
+        val isMediaSegment: Boolean = false,
     )
 
     fun clearMemoryCaches() {
@@ -148,19 +225,47 @@ object AppleMusicDecryptPipeline {
         resourceUri: (String) -> String,
         client: OkHttpClient,
         highWorkerMode: Boolean = false,
-    ): ByteArray {
+        lowPowerMode: Boolean = false,
+    ): ByteArray =
+        openVirtualHlsResourceWithInfo(
+            request = request,
+            resourceName = resourceName,
+            resourceUri = resourceUri,
+            client = client,
+            highWorkerMode = highWorkerMode,
+            lowPowerMode = lowPowerMode,
+        ).bytes
+
+    fun openVirtualHlsResourceWithInfo(
+        request: VirtualHlsRequest,
+        resourceName: String,
+        resourceUri: (String) -> String,
+        client: OkHttpClient,
+        highWorkerMode: Boolean = false,
+        lowPowerMode: Boolean = false,
+    ): VirtualHlsResource {
         closeStaleVirtualHlsSessions()
+        val profile = workerProfile(request.mode, highWorkerMode, lowPowerMode)
         val session = virtualHlsSessions.compute(request.sessionKey) { _, existing ->
             existing?.takeIf { !it.isClosed } ?: AppleMusicAlacVirtualHlsSession(
                 request = request,
                 client = client,
-                prefetchWindow = if (highWorkerMode) HIGH_PREFETCH_WINDOW_SEGMENTS else DEFAULT_PREFETCH_WINDOW_SEGMENTS,
-                prefetchConcurrency = if (highWorkerMode) HIGH_PREFETCH_CONCURRENCY else DEFAULT_PREFETCH_CONCURRENCY,
+                profile = profile,
                 resourceUri = resourceUri,
             )
         } ?: throw AppleMusicWrapperManagerProvider.WrapperManagerException("Failed to open ALAC virtual HLS session")
         return session.readResource(resourceName)
     }
+
+    fun hasMediaPlaylistForMode(
+        client: OkHttpClient,
+        initialUrl: String,
+        mode: AppleMusicWrapperManagerProvider.WrapperMode,
+    ): Boolean =
+        runCatching {
+            resolveToMediaPlaylist(client, initialUrl, mode)
+            true
+        }.getOrDefault(false)
 
     private fun closeStaleVirtualHlsSessions() {
         val now = System.currentTimeMillis()
@@ -194,8 +299,10 @@ object AppleMusicDecryptPipeline {
         requestedLength: Long = -1L,
         durationMs: Long? = null,
         highWorkerMode: Boolean = false,
+        lowPowerMode: Boolean = false,
     ): Pair<InputStream, Long> {
         val trace = AlacTrace(adamId = adamId, startOffset = start.coerceAtLeast(0L))
+        val profile = workerProfile(mode, highWorkerMode, lowPowerMode)
         val mediaDocument = trace.measure("media_playlist_fetch") {
             resolveToMediaPlaylist(client, m3u8Url, mode)
         }
@@ -204,7 +311,12 @@ object AppleMusicDecryptPipeline {
         }
         trace.mark("duration_known", mediaPlaylist.durationMs ?: durationMs)
         val segmentLengths = trace.measure("seek_segment_lengths") {
-            resolveSegmentLengths(client, mediaPlaylist.segments)
+            if (start > 0L) {
+                resolveSegmentLengths(client, mediaPlaylist.segments)
+            } else {
+                trace.mark("seek_segment_lengths_skipped")
+                null
+            }
         }.also { lengths ->
             if (lengths == null) {
                 trace.mark("seek_segment_lengths_unavailable")
@@ -213,6 +325,7 @@ object AppleMusicDecryptPipeline {
         val rawInitBytes = trace.measure("init_segment_fetch") {
             downloadBytes(client, mediaPlaylist.init.url, mediaPlaylist.init.range)
         }
+        val initDecryptInfo = parseInitDecryptInfo(rawInitBytes)
         val initQuality = readInitSegmentQuality(rawInitBytes)
         initQuality?.let { quality ->
             trace.mark("format_known", quality.toTraceValue())
@@ -251,16 +364,10 @@ object AppleMusicDecryptPipeline {
             mode = mode,
             client = client,
             decryptClient = decryptClient,
+            initDecryptInfo = initDecryptInfo,
             alacRepairParams = alacRepairParams,
             startOffset = start.coerceAtLeast(0L),
-            prefetchWindow = if (highWorkerMode) HIGH_PREFETCH_WINDOW_SEGMENTS else DEFAULT_PREFETCH_WINDOW_SEGMENTS,
-            startupPrefetchWindow = if (highWorkerMode) {
-                HIGH_STARTUP_PREFETCH_WINDOW_SEGMENTS
-            } else {
-                DEFAULT_STARTUP_PREFETCH_WINDOW_SEGMENTS
-            },
-            prefetchConcurrency = if (highWorkerMode) HIGH_PREFETCH_CONCURRENCY else DEFAULT_PREFETCH_CONCURRENCY,
-            startupReadySegments = if (highWorkerMode) HIGH_STARTUP_READY_SEGMENTS else DEFAULT_STARTUP_READY_SEGMENTS,
+            profile = profile,
             trace = trace,
         )
 
@@ -310,6 +417,9 @@ object AppleMusicDecryptPipeline {
                         AppleMusicWrapperManagerProvider.WrapperMode.ALAC,
                         qualityInfo,
                     )
+                    if (preferFast) {
+                        return qualityInfo.mergedWith(mediaPlaylist.qualityInfo)
+                    }
                     val initQuality = runCatching {
                         readInitSegmentQuality(
                             downloadBytes(client, mediaPlaylist.init.url, mediaPlaylist.init.range)
@@ -326,7 +436,7 @@ object AppleMusicDecryptPipeline {
             )
                 ?: return qualityInfo
             qualityInfo = qualityInfo.mergedWith(child.qualityInfo)
-            if (preferFast && qualityInfo?.sampleRate != null) {
+            if (preferFast && qualityInfo?.hasAny() == true) {
                 return qualityInfo
             }
             currentUrl = child.url
@@ -376,12 +486,10 @@ object AppleMusicDecryptPipeline {
         private val mode: AppleMusicWrapperManagerProvider.WrapperMode,
         private val client: OkHttpClient,
         private val decryptClient: AppleMusicWrapperManagerProvider.SampleDecryptClient,
+        private val initDecryptInfo: InitDecryptInfo,
         private val alacRepairParams: AlacRepairParams?,
         private val startOffset: Long,
-        private val prefetchWindow: Int,
-        private val startupPrefetchWindow: Int,
-        prefetchConcurrency: Int,
-        private val startupReadySegments: Int,
+        private val profile: AlacWorkerProfile,
         private val trace: AlacTrace,
     ) : InputStream() {
         private var current: InputStream? = null
@@ -393,13 +501,15 @@ object AppleMusicDecryptPipeline {
         private var loggedSlowStartup = false
         @Volatile
         private var closed = false
-        private val prefetchExecutor = Executors.newFixedThreadPool(prefetchConcurrency.coerceAtLeast(1)) { runnable ->
+        private val prefetchExecutor = Executors.newFixedThreadPool(profile.prefetchConcurrency.coerceAtLeast(1)) { runnable ->
             Thread(runnable, "AppleWrapperAlacPrefetch").apply { isDaemon = true }
         }
         private val prefetched = ConcurrentHashMap<Int, CompletableFuture<DecryptedSegment>>()
         private val encryptedSegments = ConcurrentHashMap<Int, CompletableFuture<EncryptedSegment>>()
         private val firstSampleIndexCache = ConcurrentHashMap<Int, Int>()
         private val firstSampleIndexFutures = ConcurrentHashMap<Int, CompletableFuture<Int>>()
+        private val startupSlowMs = mode.startupSlowMs()
+        private val startupTimeoutMs = mode.startupTimeoutMs()
 
         init {
             firstSampleIndexCache[0] = 0
@@ -527,9 +637,9 @@ object AppleMusicDecryptPipeline {
         private fun schedulePrefetch() {
             if (segmentIndex >= playlist.segments.size || prefetchExecutor.isShutdown) return
             val window = if (!hasOpenedMediaSegment && segmentIndex == 0) {
-                startupPrefetchWindow
+                profile.startupPrefetchWindow
             } else {
-                prefetchWindow
+                profile.prefetchWindow
             }.coerceAtLeast(1)
             var index = segmentIndex
             var scheduled = 0
@@ -542,8 +652,8 @@ object AppleMusicDecryptPipeline {
         }
 
         private fun warmStartupBuffer() {
-            if (startupReadySegments <= 0) return
-            val lastIndex = min(playlist.segments.size, segmentIndex + startupReadySegments)
+            if (profile.startupReadySegments <= 0) return
+            val lastIndex = min(playlist.segments.size, segmentIndex + profile.startupReadySegments)
             for (index in segmentIndex until lastIndex) {
                 prefetched[index]?.let { awaitPrefetchedSegment(index, it) }
             }
@@ -640,7 +750,7 @@ object AppleMusicDecryptPipeline {
                 getEncryptedSegmentBytes(client, segment, consumeCached = true)
             }
             val samples = trace.measure("segment_${index}_sample_parse") {
-                parseFragmentSamples(encryptedBytes)
+                parseFragmentSamples(encryptedBytes, initDecryptInfo)
             }
             segmentSampleCountCache[segmentCacheKey(segment)] = samples.size
             return EncryptedSegment(
@@ -688,7 +798,7 @@ object AppleMusicDecryptPipeline {
         }
 
         private fun awaitStartupSegment(future: CompletableFuture<DecryptedSegment>): DecryptedSegment {
-            val slowRemainingMs = (STARTUP_SLOW_MS - trace.elapsedMs()).coerceAtLeast(0L)
+            val slowRemainingMs = (startupSlowMs - trace.elapsedMs()).coerceAtLeast(0L)
             if (slowRemainingMs > 0L && !future.isDone) {
                 try {
                     return future.get(slowRemainingMs, TimeUnit.MILLISECONDS)
@@ -703,7 +813,7 @@ object AppleMusicDecryptPipeline {
                 logSlowStartup()
             }
 
-            val timeoutRemainingMs = (STARTUP_TIMEOUT_MS - trace.elapsedMs()).coerceAtLeast(1L)
+            val timeoutRemainingMs = (startupTimeoutMs - trace.elapsedMs()).coerceAtLeast(1L)
             return try {
                 future.get(timeoutRemainingMs, TimeUnit.MILLISECONDS)
             } catch (error: Exception) {
@@ -711,7 +821,7 @@ object AppleMusicDecryptPipeline {
                     error = error,
                     timeout = {
                         AlacStartupTimeoutException(
-                            "ALAC startup timed out after ${trace.elapsedMs()}ms; ${trace.summary()}"
+                            "${mode.errorPrefix()} startup timed out after ${trace.elapsedMs()}ms; ${trace.summary()}"
                         )
                     },
                     interruptedMessage = "ALAC startup was interrupted",
@@ -812,12 +922,12 @@ object AppleMusicDecryptPipeline {
 
         private fun trimRollingCache() {
             var completedBytes = prefetchedCompletedBytes()
-            if (completedBytes <= MAX_ROLLING_CACHE_BYTES) return
+            if (completedBytes <= profile.maxRollingCacheBytes) return
             prefetched.keys
                 .filter { it > segmentIndex }
                 .sortedDescending()
                 .forEach { index ->
-                    if (completedBytes <= MAX_ROLLING_CACHE_BYTES) return
+                    if (completedBytes <= profile.maxRollingCacheBytes) return
                     val future = prefetched[index] ?: return@forEach
                     val segment = completedSegmentOrNull(future) ?: return@forEach
                     prefetched.remove(index)
@@ -828,7 +938,7 @@ object AppleMusicDecryptPipeline {
                 .filter { it > segmentIndex }
                 .sortedDescending()
                 .forEach { index ->
-                    if (completedBytes <= MAX_ROLLING_CACHE_BYTES) return
+                    if (completedBytes <= profile.maxRollingCacheBytes) return
                     val future = encryptedSegments[index] ?: return@forEach
                     val segment = completedEncryptedSegmentOrNull(future) ?: return@forEach
                     encryptedSegments.remove(index)
@@ -873,26 +983,29 @@ object AppleMusicDecryptPipeline {
     private class AppleMusicAlacVirtualHlsSession(
         private val request: VirtualHlsRequest,
         private val client: OkHttpClient,
-        private val prefetchWindow: Int,
-        prefetchConcurrency: Int,
+        private val profile: AlacWorkerProfile,
         private val resourceUri: (String) -> String,
     ) : AutoCloseable {
         private val trace = AlacTrace(adamId = request.adamId, startOffset = 0L)
-        private val prefetchExecutor = Executors.newFixedThreadPool(prefetchConcurrency.coerceAtLeast(1)) { runnable ->
+        private val prefetchExecutor = Executors.newFixedThreadPool(profile.prefetchConcurrency.coerceAtLeast(1)) { runnable ->
             Thread(runnable, "AppleWrapperAlacVirtualHls").apply { isDaemon = true }
         }
         private val prefetched = ConcurrentHashMap<Int, CompletableFuture<DecryptedSegment>>()
         private val encryptedSegments = ConcurrentHashMap<Int, CompletableFuture<EncryptedSegment>>()
         private val firstSampleIndexCache = ConcurrentHashMap<Int, Int>()
         private val firstSampleIndexFutures = ConcurrentHashMap<Int, CompletableFuture<Int>>()
+        private val startupSlowMs = request.mode.startupSlowMs()
+        private val startupTimeoutMs = request.mode.startupTimeoutMs()
 
         private val mediaDocument = trace.measure("virtual_media_playlist_fetch") {
             resolveToMediaPlaylist(client, request.m3u8Url, request.mode)
         }
         private val playlist = parseMediaPlaylist(mediaDocument.url, mediaDocument.text, request.mode, mediaDocument.qualityInfo)
+        private val segmentStartTimesMs = playlist.segmentStartTimesMs()
         private val rawInitBytes = trace.measure("virtual_init_fetch") {
             downloadBytes(client, playlist.init.url, playlist.init.range)
         }
+        private val initDecryptInfo = parseInitDecryptInfo(rawInitBytes)
         private val initQuality = readInitSegmentQuality(rawInitBytes)
             ?.also { trace.mark("virtual_format_known", it.toTraceValue()) }
         private val realQuality = playlist.qualityInfo.mergedWith(initQuality)
@@ -942,13 +1055,13 @@ object AppleMusicDecryptPipeline {
             schedulePrefetch(0)
         }
 
-        fun readResource(resourceName: String): ByteArray {
+        fun readResource(resourceName: String): VirtualHlsResource {
             ensureOpen()
             lastAccessMs = System.currentTimeMillis()
             return when {
-                resourceName == VIRTUAL_HLS_MASTER_RESOURCE -> masterPlaylistBytes()
-                resourceName == VIRTUAL_HLS_MEDIA_RESOURCE -> mediaPlaylistBytes()
-                resourceName == VIRTUAL_HLS_INIT_RESOURCE -> initBytes
+                resourceName == VIRTUAL_HLS_MASTER_RESOURCE -> VirtualHlsResource(masterPlaylistBytes())
+                resourceName == VIRTUAL_HLS_MEDIA_RESOURCE -> VirtualHlsResource(mediaPlaylistBytes())
+                resourceName == VIRTUAL_HLS_INIT_RESOURCE -> VirtualHlsResource(initBytes)
                 resourceName.startsWith(VIRTUAL_HLS_SEGMENT_PREFIX) &&
                     resourceName.endsWith(VIRTUAL_HLS_SEGMENT_SUFFIX) -> {
                     val index = resourceName
@@ -958,7 +1071,15 @@ object AppleMusicDecryptPipeline {
                         ?: throw AppleMusicWrapperManagerProvider.WrapperManagerException(
                             "Invalid ALAC virtual HLS segment resource $resourceName"
                         )
-                    readSegment(index)
+                    val bytes = readSegment(index)
+                    val startMs = segmentStartTimesMs.getOrNull(index)
+                    val durationMs = playlist.segments.getOrNull(index)?.durationMs
+                    VirtualHlsResource(
+                        bytes = bytes,
+                        mediaStartMs = startMs,
+                        mediaEndMs = if (startMs != null && durationMs != null) startMs + durationMs else null,
+                        isMediaSegment = true,
+                    )
                 }
                 else -> throw AppleMusicWrapperManagerProvider.WrapperManagerException(
                     "Unknown ALAC virtual HLS resource $resourceName"
@@ -1025,7 +1146,11 @@ object AppleMusicDecryptPipeline {
             if (prefetchExecutor.isShutdown || startIndex >= playlist.segments.size) return
             var index = startIndex.coerceAtLeast(0)
             var scheduled = 0
-            val window = prefetchWindow.coerceAtLeast(1)
+            val window = if (!firstSegmentReturned && index == 0) {
+                profile.startupPrefetchWindow
+            } else {
+                profile.prefetchWindow
+            }.coerceAtLeast(1)
             while (index < playlist.segments.size && scheduled < window) {
                 ensurePrefetch(index)
                 index++
@@ -1106,7 +1231,7 @@ object AppleMusicDecryptPipeline {
                 getEncryptedSegmentBytes(client, segment, consumeCached = true)
             }
             val samples = trace.measure("virtual_segment_${index}_sample_parse") {
-                parseFragmentSamples(encryptedBytes)
+                parseFragmentSamples(encryptedBytes, initDecryptInfo)
             }
             segmentSampleCountCache[segmentCacheKey(segment)] = samples.size
             return EncryptedSegment(
@@ -1121,7 +1246,7 @@ object AppleMusicDecryptPipeline {
             future: CompletableFuture<DecryptedSegment>,
         ): DecryptedSegment {
             val slowTimeoutMs = if (!firstSegmentReturned && index == 0) {
-                (STARTUP_SLOW_MS - trace.elapsedMs()).coerceAtLeast(1L)
+                (startupSlowMs - trace.elapsedMs()).coerceAtLeast(1L)
             } else {
                 SEGMENT_SLOW_MS
             }
@@ -1145,7 +1270,7 @@ object AppleMusicDecryptPipeline {
             }
 
             val finalTimeoutMs = if (!firstSegmentReturned && index == 0) {
-                (STARTUP_TIMEOUT_MS - trace.elapsedMs()).coerceAtLeast(1L)
+                (startupTimeoutMs - trace.elapsedMs()).coerceAtLeast(1L)
             } else {
                 (SEGMENT_TIMEOUT_MS - SEGMENT_SLOW_MS).coerceAtLeast(1L)
             }
@@ -1155,7 +1280,7 @@ object AppleMusicDecryptPipeline {
                 if (!firstSegmentReturned && index == 0) {
                     close()
                     throw AlacStartupTimeoutException(
-                        "ALAC virtual HLS startup timed out after ${trace.elapsedMs()}ms; ${trace.summary()}"
+                        "${request.mode.errorPrefix()} virtual HLS startup timed out after ${trace.elapsedMs()}ms; ${trace.summary()}"
                     )
                 }
                 throw AlacSegmentTimeoutException(
@@ -1190,12 +1315,12 @@ object AppleMusicDecryptPipeline {
 
         private fun trimRollingCache() {
             var completedBytes = prefetchedCompletedBytes()
-            if (completedBytes <= MAX_ROLLING_CACHE_BYTES) return
+            if (completedBytes <= profile.maxRollingCacheBytes) return
             prefetched.keys
                 .filter { it > lastRequestedSegment }
                 .sortedDescending()
                 .forEach { index ->
-                    if (completedBytes <= MAX_ROLLING_CACHE_BYTES) return
+                    if (completedBytes <= profile.maxRollingCacheBytes) return
                     val future = prefetched[index] ?: return@forEach
                     val segment = completedSegmentOrNull(future) ?: return@forEach
                     prefetched.remove(index)
@@ -1232,6 +1357,20 @@ object AppleMusicDecryptPipeline {
 
         private fun ensureOpen() {
             if (closed) throw IOException("ALAC virtual HLS session was closed")
+        }
+
+        private fun MediaPlaylist.segmentStartTimesMs(): List<Long?> {
+            var cursorMs = 0L
+            return segments.map { segment ->
+                val startMs = cursorMs
+                val durationMs = segment.durationMs
+                if (durationMs == null) {
+                    null
+                } else {
+                    cursorMs += durationMs
+                    startMs
+                }
+            }
         }
 
         override fun close() {
@@ -1353,6 +1492,27 @@ object AppleMusicDecryptPipeline {
         return childPlaylists.distinct().singleOrNull()
     }
 
+    private fun AppleMusicWrapperManagerProvider.WrapperMode.startupSlowMs(): Long =
+        if (this == AppleMusicWrapperManagerProvider.WrapperMode.ALAC) {
+            STARTUP_SLOW_MS
+        } else {
+            NON_ALAC_STARTUP_SLOW_MS
+        }
+
+    private fun AppleMusicWrapperManagerProvider.WrapperMode.startupTimeoutMs(): Long =
+        if (this == AppleMusicWrapperManagerProvider.WrapperMode.ALAC) {
+            STARTUP_TIMEOUT_MS
+        } else {
+            NON_ALAC_STARTUP_TIMEOUT_MS
+        }
+
+    private fun AppleMusicWrapperManagerProvider.WrapperMode.errorPrefix(): String =
+        when (this) {
+            AppleMusicWrapperManagerProvider.WrapperMode.ALAC -> "ALAC"
+            AppleMusicWrapperManagerProvider.WrapperMode.AAC -> "Apple Music AAC"
+            AppleMusicWrapperManagerProvider.WrapperMode.DOLBY_ATMOS -> "Apple Music Dolby Atmos"
+        }
+
     private fun Map<String, String>.matchesAppleMusicMode(
         mode: AppleMusicWrapperManagerProvider.WrapperMode,
     ): Boolean = values.any { it.matchesAppleMusicMode(mode) }
@@ -1373,7 +1533,12 @@ object AppleMusicDecryptPipeline {
                     value.contains("audio-ec3") ||
                     value.contains("audio-ac3") ||
                     value.contains("ec-3") ||
+                    value.contains("ec+3") ||
+                    value.contains("eac3") ||
+                    value.contains("e-ac-3") ||
                     value.contains("ac-3") ||
+                    value.contains("joc") ||
+                    value.contains("spatial") ||
                     value.contains("atmos")
         }
     }
@@ -1519,6 +1684,7 @@ object AppleMusicDecryptPipeline {
         samples: List<SampleRange>,
         segmentIndex: Int,
         firstSampleIndex: Int,
+        @Suppress("UNUSED_PARAMETER")
         mode: AppleMusicWrapperManagerProvider.WrapperMode,
         alacRepairParams: AlacRepairParams?,
         trace: AlacTrace,
@@ -1596,32 +1762,22 @@ object AppleMusicDecryptPipeline {
 
         val output = encryptedBytes.copyOf()
         var preservedTailBytes = 0
-        val requestsByKey = samples.mapIndexedNotNull { localIndex, sample ->
-            val globalIndex = firstSampleIndex + localIndex
+        var decryptRequestIndex = firstSampleIndex
+        val requestsByKey = samples.flatMap { sample ->
             val key = selectKeyForSample(
                 keyRing = playlist.keyRing,
                 segmentKey = segment.keyUri,
                 sampleDescriptionIndex = sample.sampleDescriptionIndex
             )
-            val encryptedSample = encryptedBytes.copyOfRange(sample.offset, sample.offset + sample.size)
-            val decryptLength = if (mode == AppleMusicWrapperManagerProvider.WrapperMode.ALAC) {
-                encryptedSample.cbcsDecryptLength()
-            } else {
-                encryptedSample.size
+            buildSampleDecryptPlans(encryptedBytes, sample).map { plan ->
+                preservedTailBytes += plan.preservedBytes
+                val requestIndex = decryptRequestIndex++
+                SampleDecryptRequest(
+                    key = key,
+                    plan = plan,
+                    request = AppleMusicWrapperManagerProvider.DecryptSample(requestIndex, plan.payload)
+                )
             }
-            preservedTailBytes += encryptedSample.size - decryptLength
-            if (decryptLength <= 0) return@mapIndexedNotNull null
-            val encryptedPayload = if (decryptLength == encryptedSample.size) {
-                encryptedSample
-            } else {
-                encryptedSample.copyOf(decryptLength)
-            }
-            SampleDecryptRequest(
-                key = key,
-                range = sample,
-                decryptLength = decryptLength,
-                request = AppleMusicWrapperManagerProvider.DecryptSample(globalIndex, encryptedPayload)
-            )
         }.groupBy { it.key }
         if (preservedTailBytes > 0) {
             trace.mark("segment_${segmentIndex}_cbcs_tail_preserved", preservedTailBytes)
@@ -1653,18 +1809,20 @@ object AppleMusicDecryptPipeline {
                     ?: throw AppleMusicWrapperManagerProvider.WrapperManagerException(
                         "wrapper-manager did not return decrypted sample ${sampleRequest.request.sampleIndex}"
                     )
-                if (decryptedSample.size != sampleRequest.decryptLength) {
+                if (decryptedSample.size != sampleRequest.plan.payload.size) {
                     throw AppleMusicWrapperManagerProvider.WrapperManagerException(
                         "wrapper-manager sample ${sampleRequest.request.sampleIndex} size mismatch"
                     )
                 }
-                System.arraycopy(
-                    decryptedSample,
-                    0,
-                    output,
-                    sampleRequest.range.offset,
-                    decryptedSample.size
-                )
+                sampleRequest.plan.writeBacks.forEach { writeBack ->
+                    System.arraycopy(
+                        decryptedSample,
+                        writeBack.sourceOffset,
+                        output,
+                        writeBack.destinationOffset,
+                        writeBack.length,
+                    )
+                }
             }
         }
 
@@ -1679,6 +1837,117 @@ object AppleMusicDecryptPipeline {
         validateDecryptedFragment(output, samples.size, segmentIndex)
         trace.mark("segment_${segmentIndex}_ready", "samples=${samples.size}")
         return DecryptedSegment(output, samples.size, firstSampleIndex)
+    }
+
+    private fun buildSampleDecryptPlans(
+        encryptedBytes: ByteArray,
+        sample: SampleRange,
+    ): List<SampleDecryptPlan> {
+        val plans = mutableListOf<SampleDecryptPlan>()
+        if (sample.subsamples.isEmpty()) {
+            buildProtectedRangeDecryptPlan(
+                encryptedBytes = encryptedBytes,
+                protectedStart = sample.offset,
+                protectedLength = sample.size,
+                tenc = sample.tenc,
+            )?.let(plans::add)
+        } else {
+            var cursor = sample.offset
+            val sampleEnd = sample.offset + sample.size
+            sample.subsamples.forEach { subsample ->
+                cursor += subsample.clearBytes
+                if (cursor > sampleEnd) {
+                    throw AppleMusicWrapperManagerProvider.WrapperManagerException(
+                        "ALAC/AAC/Atmos subsample clear range exceeded sample"
+                    )
+                }
+                val protectedLength = min(subsample.protectedBytes, sampleEnd - cursor)
+                buildProtectedRangeDecryptPlan(
+                    encryptedBytes = encryptedBytes,
+                    protectedStart = cursor,
+                    protectedLength = protectedLength,
+                    tenc = sample.tenc,
+                )?.let(plans::add)
+                cursor += protectedLength
+            }
+        }
+        if (plans.isEmpty()) return emptyList()
+        val decryptedBytes = plans.sumOf { it.payload.size }
+        return plans.mapIndexed { index, plan ->
+            plan.copy(preservedBytes = if (index == 0) sample.size - decryptedBytes else 0)
+        }
+    }
+
+    private fun buildProtectedRangeDecryptPlan(
+        encryptedBytes: ByteArray,
+        protectedStart: Int,
+        protectedLength: Int,
+        tenc: TencInfo?,
+    ): SampleDecryptPlan? {
+        val blocks = mutableListOf<SampleDecryptWriteBack>()
+        appendCbcsProtectedBlocks(
+            blocks = blocks,
+            protectedStart = protectedStart,
+            protectedLength = protectedLength,
+            tenc = tenc,
+        )
+        if (blocks.isEmpty()) return null
+
+        var sourceOffset = 0
+        val writeBacks = blocks.map { block ->
+            block.copy(sourceOffset = sourceOffset).also {
+                sourceOffset += block.length
+            }
+        }
+        val payload = ByteArray(sourceOffset)
+        writeBacks.forEach { writeBack ->
+            System.arraycopy(
+                encryptedBytes,
+                writeBack.destinationOffset,
+                payload,
+                writeBack.sourceOffset,
+                writeBack.length,
+            )
+        }
+        return SampleDecryptPlan(
+            payload = payload,
+            writeBacks = writeBacks,
+            preservedBytes = protectedLength - writeBacks.sumOf { it.length },
+        )
+    }
+
+    private fun appendCbcsProtectedBlocks(
+        blocks: MutableList<SampleDecryptWriteBack>,
+        protectedStart: Int,
+        protectedLength: Int,
+        tenc: TencInfo?,
+    ) {
+        if (protectedLength <= 0) return
+        val cryptBlockLength = (tenc?.defaultCryptByteBlock ?: 0) * CBCS_BLOCK_SIZE
+        val skipBlockLength = (tenc?.defaultSkipByteBlock ?: 0) * CBCS_BLOCK_SIZE
+        if (skipBlockLength <= 0 || cryptBlockLength <= 0) {
+            val decryptLength = protectedLength - (protectedLength % CBCS_BLOCK_SIZE)
+            if (decryptLength > 0) {
+                blocks += SampleDecryptWriteBack(
+                    sourceOffset = 0,
+                    destinationOffset = protectedStart,
+                    length = decryptLength,
+                )
+            }
+            return
+        }
+
+        var pos = 0
+        while (protectedLength - pos >= cryptBlockLength) {
+            blocks += SampleDecryptWriteBack(
+                sourceOffset = 0,
+                destinationOffset = protectedStart + pos,
+                length = cryptBlockLength,
+            )
+            pos += cryptBlockLength
+            if (protectedLength - pos < skipBlockLength) break
+            pos += skipBlockLength
+        }
     }
 
     private fun resolveSegmentLengths(client: OkHttpClient, segments: List<MediaSegment>): List<Long>? {
@@ -1843,12 +2112,194 @@ object AppleMusicDecryptPipeline {
         segmentKey: String?,
         sampleDescriptionIndex: Int,
     ): String {
-        keyRing.getOrNull(sampleDescriptionIndex)?.let { return it }
         segmentKey?.let { return it }
+        keyRing.getOrNull(sampleDescriptionIndex)?.let { return it }
         return keyRing.lastOrNull()
             ?: throw AppleMusicWrapperManagerProvider.WrapperManagerException(
                 "ALAC media segment did not have a decrypt key"
             )
+    }
+
+    private fun parseInitDecryptInfo(initBytes: ByteArray): InitDecryptInfo {
+        val tracks = mutableMapOf<Int, TrackDecryptInfo>()
+        forEachChildBox(initBytes, 0, initBytes.size) { moov ->
+            if (moov.type != "moov") return@forEachChildBox
+            forEachChildBox(initBytes, moov.payloadStart, moov.end) { trak ->
+                if (trak.type != "trak") return@forEachChildBox
+                val trackId = findChildBox(initBytes, trak, "tkhd")
+                    ?.let { parseTkhdTrackId(initBytes, it) }
+                    ?: 0
+                val stsd = findChildBox(initBytes, trak, "mdia")
+                    ?.let { findChildBox(initBytes, it, "minf") }
+                    ?.let { findChildBox(initBytes, it, "stbl") }
+                    ?.let { findChildBox(initBytes, it, "stsd") }
+                    ?: return@forEachChildBox
+                val entries = parseStsdDecryptInfo(initBytes, stsd)
+                if (entries.isNotEmpty()) {
+                    tracks[trackId] = TrackDecryptInfo(trackId = trackId, entries = entries)
+                }
+            }
+        }
+        return InitDecryptInfo(tracks)
+    }
+
+    private fun parseTkhdTrackId(data: ByteArray, tkhd: Mp4Box): Int? {
+        if (tkhd.payloadStart + 4 > tkhd.end) return null
+        val version = fullBoxVersion(data, tkhd)
+        val offset = if (version == 1) tkhd.payloadStart + 20 else tkhd.payloadStart + 12
+        if (offset + 4 > tkhd.end) return null
+        return readUInt32(data, offset)
+            .takeIf { it in 1L..Int.MAX_VALUE.toLong() }
+            ?.toInt()
+    }
+
+    private fun parseStsdDecryptInfo(
+        data: ByteArray,
+        stsd: Mp4Box,
+    ): Map<Int, SampleEntryDecryptInfo> {
+        if (stsd.payloadStart + 8 > stsd.end) return emptyMap()
+        val entries = mutableMapOf<Int, SampleEntryDecryptInfo>()
+        val entryCount = readUInt32(data, stsd.payloadStart + 4)
+            .coerceAtMost(Int.MAX_VALUE.toLong())
+            .toInt()
+        var pos = stsd.payloadStart + 8
+        repeat(entryCount) { index ->
+            val entry = readBox(data, pos, stsd.end) ?: return@repeat
+            val tenc = readSampleEntryTenc(data, entry)
+            if (tenc != null || entry.type == "enca") {
+                entries[index] = SampleEntryDecryptInfo(
+                    sampleDescriptionIndex = index,
+                    tenc = tenc,
+                )
+            }
+            pos = entry.end
+        }
+        return entries
+    }
+
+    private fun readSampleEntryTenc(data: ByteArray, entry: Mp4Box): TencInfo? {
+        val childStart = entry.payloadStart + 28
+        if (childStart >= entry.end) return null
+        val sinf = findNextTopLevelBox(data, childStart, entry.end, "sinf") ?: return null
+        return findTencBox(data, sinf)?.let { parseTencInfo(data, it) }
+    }
+
+    private fun findTencBox(data: ByteArray, parent: Mp4Box): Mp4Box? {
+        var found: Mp4Box? = null
+        fun visit(start: Int, end: Int) {
+            if (found != null) return
+            forEachChildBox(data, start, end) { child ->
+                if (found != null) return@forEachChildBox
+                if (child.type == "tenc") {
+                    found = child
+                    return@forEachChildBox
+                }
+                if (child.type in containerBoxes || child.type in sampleEntryChildContainers || child.type == "sinf") {
+                    visit(child.payloadStart, child.end)
+                }
+            }
+        }
+        visit(parent.payloadStart, parent.end)
+        return found
+    }
+
+    private fun parseTencInfo(data: ByteArray, tenc: Mp4Box): TencInfo? {
+        if (tenc.payloadStart + 24 > tenc.end) return null
+        val version = fullBoxVersion(data, tenc)
+        var pos = tenc.payloadStart + 4
+        pos += 1
+        val infoByte = data.getOrNull(pos)?.toInt()?.and(0xff) ?: return null
+        val cryptByteBlock: Int
+        val skipByteBlock: Int
+        if (version == 0) {
+            cryptByteBlock = 0
+            skipByteBlock = 0
+        } else {
+            cryptByteBlock = infoByte ushr 4
+            skipByteBlock = infoByte and 0x0f
+        }
+        pos += 1
+        pos += 1
+        val perSampleIvSize = data.getOrNull(pos)?.toInt()?.and(0xff) ?: return null
+        return TencInfo(
+            defaultCryptByteBlock = cryptByteBlock,
+            defaultSkipByteBlock = skipByteBlock,
+            defaultPerSampleIVSize = perSampleIvSize,
+        )
+    }
+
+    private fun parseTrafSencSamples(
+        data: ByteArray,
+        traf: Mp4Box,
+        tenc: TencInfo?,
+    ): List<List<SubSamplePattern>> {
+        val senc = findChildBox(data, traf, "senc")
+            ?: findPiffSencUuidBox(data, traf)
+            ?: return emptyList()
+        val bodyStart = if (senc.type == "uuid") senc.payloadStart + PIFF_SENC_UUID.size else senc.payloadStart
+        if (bodyStart >= senc.end) return emptyList()
+        val preferredIvSize = tenc?.defaultPerSampleIVSize
+        val candidates = if (preferredIvSize != null) {
+            listOf(preferredIvSize)
+        } else {
+            listOf(0, 8, 16)
+        }
+        candidates.forEach { ivSize ->
+            parseSencSamples(data, bodyStart, senc.end, ivSize)?.let { return it }
+        }
+        Timber.tag(TRACE_TAG).w("Unable to parse ALAC/AAC/Atmos senc box with ivSize=${preferredIvSize ?: "unknown"}")
+        return emptyList()
+    }
+
+    private fun parseSencSamples(
+        data: ByteArray,
+        start: Int,
+        end: Int,
+        perSampleIvSize: Int,
+    ): List<List<SubSamplePattern>>? {
+        if (start + 8 > end || perSampleIvSize !in listOf(0, 8, 16)) return null
+        val flags = readUInt32(data, start).toInt() and 0xffffff
+        val sampleCount = readUInt32(data, start + 4)
+            .takeIf { it <= Int.MAX_VALUE.toLong() }
+            ?.toInt()
+            ?: return null
+        var pos = start + 8
+        val usesSubsamples = flags and SENC_USE_SUBSAMPLE_ENCRYPTION != 0
+        if (!usesSubsamples) {
+            val expectedEnd = pos + sampleCount * perSampleIvSize
+            if (expectedEnd != end) return null
+            return List(sampleCount) { emptyList() }
+        }
+        val samples = ArrayList<List<SubSamplePattern>>(sampleCount)
+        repeat(sampleCount) {
+            pos += perSampleIvSize
+            if (pos + 2 > end) return null
+            val subsampleCount = readUInt16(data, pos)
+            pos += 2
+            val subsamples = ArrayList<SubSamplePattern>(subsampleCount)
+            repeat(subsampleCount) {
+                if (pos + 6 > end) return null
+                val clear = readUInt16(data, pos)
+                val protected = readUInt32(data, pos + 2)
+                    .takeIf { it <= Int.MAX_VALUE.toLong() }
+                    ?.toInt()
+                    ?: return null
+                pos += 6
+                subsamples += SubSamplePattern(clearBytes = clear, protectedBytes = protected)
+            }
+            samples += subsamples
+        }
+        return samples.takeIf { pos == end }
+    }
+
+    private fun findPiffSencUuidBox(data: ByteArray, parent: Mp4Box): Mp4Box? {
+        var found: Mp4Box? = null
+        forEachChildBox(data, parent.payloadStart, parent.end) { child ->
+            if (found == null && child.type == "uuid" && child.isPiffSencUuid(data)) {
+                found = child
+            }
+        }
+        return found
     }
 
     private fun String.isAppleMusicDecryptKey(
@@ -1857,7 +2308,10 @@ object AppleMusicDecryptPipeline {
         return endsWith(mode.keySuffix) || endsWith(KEY_SUFFIX_DEFAULT)
     }
 
-    private fun parseFragmentSamples(data: ByteArray): List<SampleRange> {
+    private fun parseFragmentSamples(
+        data: ByteArray,
+        initDecryptInfo: InitDecryptInfo? = null,
+    ): List<SampleRange> {
         val samples = mutableListOf<SampleRange>()
         var pos = 0
         while (pos < data.size) {
@@ -1867,7 +2321,7 @@ object AppleMusicDecryptPipeline {
                     ?: throw AppleMusicWrapperManagerProvider.WrapperManagerException(
                         "ALAC fMP4 segment had moof without following mdat"
                     )
-                samples += parseMoofSamples(data, box, mdat)
+                samples += parseMoofSamples(data, box, mdat, initDecryptInfo)
                 pos = mdat.end
             } else {
                 pos = box.end
@@ -1908,13 +2362,19 @@ object AppleMusicDecryptPipeline {
         }
     }
 
-    private fun parseMoofSamples(data: ByteArray, moof: Mp4Box, mdat: Mp4Box): List<SampleRange> {
+    private fun parseMoofSamples(
+        data: ByteArray,
+        moof: Mp4Box,
+        mdat: Mp4Box,
+        initDecryptInfo: InitDecryptInfo?,
+    ): List<SampleRange> {
         val samples = mutableListOf<SampleRange>()
         var implicitDataOffset = mdat.payloadStart
 
         forEachChildBox(data, moof.payloadStart, moof.end) trafLoop@ { child ->
             if (child.type != "traf") return@trafLoop
             val tfhd = findChildBox(data, child, "tfhd")?.let { parseTfhd(data, it) } ?: TfhdInfo()
+            val trafSamples = mutableListOf<SampleRange>()
             forEachChildBox(data, child.payloadStart, child.end) trunLoop@ { trafChild ->
                 if (trafChild.type != "trun") return@trunLoop
                 val parsed = parseTrunSamples(
@@ -1925,8 +2385,17 @@ object AppleMusicDecryptPipeline {
                     tfhd = tfhd,
                     implicitDataOffset = implicitDataOffset
                 )
-                samples += parsed.samples
+                trafSamples += parsed.samples
                 implicitDataOffset = max(implicitDataOffset, parsed.nextImplicitOffset)
+            }
+            val trackDecryptInfo = initDecryptInfo?.trackInfo(tfhd.trackId)
+            val tenc = trackDecryptInfo?.sampleEntry(tfhd.sampleDescriptionIndex)?.tenc
+            val subsamples = parseTrafSencSamples(data, child, tenc)
+            samples += trafSamples.mapIndexed { index, sample ->
+                sample.copy(
+                    tenc = tenc,
+                    subsamples = subsamples.getOrNull(index).orEmpty(),
+                )
             }
         }
 
@@ -2038,7 +2507,7 @@ object AppleMusicDecryptPipeline {
             var pos = start
             while (pos < end && !found) {
                 val box = readBox(this, pos, end) ?: return
-                if (box.type in fragmentEncryptionBoxes) {
+                if (box.type in fragmentEncryptionBoxes || box.isPiffSencUuid(this)) {
                     found = true
                     return
                 }
@@ -2057,6 +2526,7 @@ object AppleMusicDecryptPipeline {
         var pos = box.payloadStart
         val flags = readUInt32(data, pos).toInt() and 0xffffff
         pos += 4
+        val trackId = readUInt32(data, pos).toInt()
         pos += 4
 
         var baseDataOffset: Long? = null
@@ -2079,6 +2549,7 @@ object AppleMusicDecryptPipeline {
         if (flags and 0x000020 != 0) pos += 4
 
         return TfhdInfo(
+            trackId = trackId,
             baseDataOffset = baseDataOffset,
             defaultBaseIsMoof = flags and 0x020000 != 0,
             sampleDescriptionIndex = sampleDescriptionIndex.coerceAtLeast(0),
@@ -2145,6 +2616,7 @@ object AppleMusicDecryptPipeline {
     ): ByteArray {
         var output = initBytes.copyOf()
         patchSampleEntries(output, 0, output.size, mode)
+        stripInitEncryptionBoxes(output)
         output = patchTimelineDurations(output, durationMs)
         patchBitrateBoxes(output, averageBitrate)
         return output
@@ -2571,7 +3043,7 @@ object AppleMusicDecryptPipeline {
 
     private fun stripFragmentEncryptionBoxes(data: ByteArray, start: Int, end: Int) {
         forEachChildBox(data, start, end) { box ->
-            if (box.type in fragmentEncryptionBoxes) {
+            if (box.type in fragmentEncryptionBoxes || box.isPiffSencUuid(data)) {
                 data[box.start + 4] = 'f'.code.toByte()
                 data[box.start + 5] = 'r'.code.toByte()
                 data[box.start + 6] = 'e'.code.toByte()
@@ -2598,6 +3070,14 @@ object AppleMusicDecryptPipeline {
         }
     }
 
+    private fun Mp4Box.isPiffSencUuid(data: ByteArray): Boolean {
+        if (type != "uuid") return false
+        if (payloadStart + PIFF_SENC_UUID.size > end) return false
+        return PIFF_SENC_UUID.indices.all { index ->
+            data[payloadStart + index] == PIFF_SENC_UUID[index]
+        }
+    }
+
     private fun patchStsdEntries(
         data: ByteArray,
         stsd: Mp4Box,
@@ -2608,12 +3088,57 @@ object AppleMusicDecryptPipeline {
         repeat(entryCount) {
             val entry = readBox(data, pos, stsd.end) ?: return
             if (entry.type == "enca") {
-                mode.sampleEntryType.forEachIndexed { index, char ->
+                val sampleEntryType = findSampleEntryOriginalType(data, entry)
+                    ?: mode.sampleEntryType
+                sampleEntryType.forEachIndexed { index, char ->
                     data[entry.start + 4 + index] = char.code.toByte()
                 }
+                freeSampleEntryEncryptionBox(data, entry)
             }
             pos = entry.end
         }
+    }
+
+    private fun findSampleEntryOriginalType(data: ByteArray, entry: Mp4Box): String? {
+        val childStart = entry.payloadStart + 28
+        if (childStart >= entry.end) return null
+        val sinf = findNextTopLevelBox(data, childStart, entry.end, "sinf") ?: return null
+        val frma = findChildBox(data, sinf, "frma") ?: return null
+        if (frma.payloadStart + 4 > frma.end) return null
+        return readAscii(data, frma.payloadStart, 4)
+            .takeIf { it.isPrintableMp4Type() }
+    }
+
+    private fun freeSampleEntryEncryptionBox(data: ByteArray, entry: Mp4Box) {
+        val childStart = entry.payloadStart + 28
+        if (childStart >= entry.end) return
+        findNextTopLevelBox(data, childStart, entry.end, "sinf")?.let { sinf ->
+            writeAscii(data, sinf.start + 4, "free")
+        }
+    }
+
+    private fun stripInitEncryptionBoxes(data: ByteArray) {
+        stripInitEncryptionBoxes(data, 0, data.size)
+    }
+
+    private fun stripInitEncryptionBoxes(data: ByteArray, start: Int, end: Int) {
+        forEachChildBox(data, start, end) { box ->
+            when {
+                box.type == "pssh" || box.isEncryptionSampleGroupBox(data) -> {
+                    writeAscii(data, box.start + 4, "free")
+                }
+                box.type in containerBoxes -> {
+                    stripInitEncryptionBoxes(data, box.payloadStart, box.end)
+                }
+            }
+        }
+    }
+
+    private fun Mp4Box.isEncryptionSampleGroupBox(data: ByteArray): Boolean {
+        if (type != "sbgp" && type != "sgpd") return false
+        if (payloadStart + 8 > end) return false
+        val groupingType = readAscii(data, payloadStart + 4, 4)
+        return groupingType == "seam" || groupingType == "seig"
     }
 
     private fun patchTimelineDurations(data: ByteArray, durationMs: Long?): ByteArray {
@@ -3132,6 +3657,10 @@ object AppleMusicDecryptPipeline {
         writeUInt32(data, offset + 4, value)
     }
 
+    private fun readAscii(data: ByteArray, offset: Int, length: Int): String {
+        return String(data, offset, length, Charsets.ISO_8859_1)
+    }
+
     private fun writeAscii(data: ByteArray, offset: Int, value: String) {
         value.toByteArray(Charsets.ISO_8859_1).copyInto(data, offset)
     }
@@ -3146,6 +3675,13 @@ object AppleMusicDecryptPipeline {
 
     private fun AppleMusicWrapperManagerProvider.WrapperManagerException.isSampleIntegrityFailure(): Boolean {
         val text = message.orEmpty()
+        if (
+            text.contains("fallback deadline", ignoreCase = true) ||
+            text.contains("streaming decrypt failed", ignoreCase = true) ||
+            text.contains("streaming decrypt was not available", ignoreCase = true)
+        ) {
+            return false
+        }
         return text.contains("did not return usable sample", ignoreCase = true) ||
             text.contains("sample", ignoreCase = true) && text.contains("size mismatch", ignoreCase = true)
     }
@@ -3163,7 +3699,7 @@ object AppleMusicDecryptPipeline {
     )
 
     private val fragmentEncryptionBoxes = setOf(
-        "saiz", "saio", "senc", "sbgp", "sgpd"
+        "saiz", "saio", "senc", "sbgp", "sgpd", "pssh"
     )
 
     private fun normalizeSampleRate(value: Int): Int? {
@@ -3263,6 +3799,8 @@ object AppleMusicDecryptPipeline {
         val offset: Int,
         val size: Int,
         val sampleDescriptionIndex: Int,
+        val tenc: TencInfo? = null,
+        val subsamples: List<SubSamplePattern> = emptyList(),
     )
 
     private data class AlacRepairParams(
@@ -3339,9 +3877,55 @@ object AppleMusicDecryptPipeline {
 
     private data class SampleDecryptRequest(
         val key: String,
-        val range: SampleRange,
-        val decryptLength: Int,
+        val plan: SampleDecryptPlan,
         val request: AppleMusicWrapperManagerProvider.DecryptSample,
+    )
+
+    private data class SampleDecryptPlan(
+        val payload: ByteArray,
+        val writeBacks: List<SampleDecryptWriteBack>,
+        val preservedBytes: Int,
+    )
+
+    private data class SampleDecryptWriteBack(
+        val sourceOffset: Int,
+        val destinationOffset: Int,
+        val length: Int,
+    )
+
+    private data class InitDecryptInfo(
+        val tracks: Map<Int, TrackDecryptInfo>,
+    ) {
+        private val fallback = tracks.values.firstOrNull()
+
+        fun trackInfo(trackId: Int): TrackDecryptInfo? =
+            tracks[trackId] ?: fallback
+    }
+
+    private data class TrackDecryptInfo(
+        val trackId: Int,
+        val entries: Map<Int, SampleEntryDecryptInfo>,
+    ) {
+        private val fallback = entries.values.firstOrNull()
+
+        fun sampleEntry(sampleDescriptionIndex: Int): SampleEntryDecryptInfo? =
+            entries[sampleDescriptionIndex] ?: fallback
+    }
+
+    private data class SampleEntryDecryptInfo(
+        val sampleDescriptionIndex: Int,
+        val tenc: TencInfo?,
+    )
+
+    private data class TencInfo(
+        val defaultCryptByteBlock: Int,
+        val defaultSkipByteBlock: Int,
+        val defaultPerSampleIVSize: Int,
+    )
+
+    private data class SubSamplePattern(
+        val clearBytes: Int,
+        val protectedBytes: Int,
     )
 
     private data class Mp4Box(
@@ -3354,6 +3938,7 @@ object AppleMusicDecryptPipeline {
     }
 
     private data class TfhdInfo(
+        val trackId: Int = 0,
         val baseDataOffset: Long? = null,
         val defaultBaseIsMoof: Boolean = false,
         val sampleDescriptionIndex: Int = 0,

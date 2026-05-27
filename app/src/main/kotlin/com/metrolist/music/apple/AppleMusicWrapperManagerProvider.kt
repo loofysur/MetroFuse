@@ -41,9 +41,15 @@ object AppleMusicWrapperManagerProvider {
     private const val WRAPPER_UNARY_CALL_TIMEOUT_SECONDS = 7L
     private const val WRAPPER_STATUS_CACHE_MS = 20_000L
     private const val DECRYPT_HEDGE_DELAY_MS = 1_800L
-    private const val STREAMING_FIRST_REPLY_TIMEOUT_MS = 1_200L
-    private const val STREAMING_SAMPLE_TIMEOUT_MS = 8_000L
+    private const val STREAMING_FIRST_REPLY_TIMEOUT_MS = 2_500L
+    private const val STREAMING_NON_ALAC_FIRST_REPLY_TIMEOUT_MS = 12_000L
+    private const val STREAMING_SAMPLE_TIMEOUT_MS = 12_000L
+    private const val STREAMING_NON_ALAC_SAMPLE_TIMEOUT_MS = 30_000L
     private const val STREAMING_WRITE_POLL_MS = 250L
+    private const val STREAMING_WRITE_BATCH_SIZE = 32
+    private const val STREAMING_KEEPALIVE_MS = 15_000L
+    private const val TRANSIENT_WRAPPER_RETRY_COUNT = 3
+    private const val TRANSIENT_WRAPPER_RETRY_DELAY_MS = 1_250L
 
     enum class WrapperMode(
         val idSuffix: String,
@@ -261,12 +267,14 @@ object AppleMusicWrapperManagerProvider {
         val errors = mutableListOf<String>()
         candidates.forEach { (candidateHost, candidateSecure) ->
             runCatching {
-                getM3u8(
-                    adamId = adamId,
-                    host = candidateHost,
-                    secure = candidateSecure,
-                    mode = mode,
-                )
+                retryTransientWrapperCall("M3U8", candidateHost) {
+                    getM3u8(
+                        adamId = adamId,
+                        host = candidateHost,
+                        secure = candidateSecure,
+                        mode = mode,
+                    )
+                }
             }.onSuccess { m3u8 ->
                 return WrapperM3u8(
                     host = candidateHost,
@@ -379,15 +387,17 @@ object AppleMusicWrapperManagerProvider {
         val errors = mutableListOf<String>()
         candidates.forEach { (candidateHost, candidateSecure) ->
             runCatching {
-                decryptSegmentOnInstance(
-                    host = candidateHost,
-                    secure = candidateSecure,
-                    mode = mode,
-                    adamId = adamId,
-                    key = key,
-                    samples = samples,
-                    grpcClients = grpcClients,
-                )
+                retryTransientWrapperCall("Decrypt", candidateHost) {
+                    decryptSegmentOnInstance(
+                        host = candidateHost,
+                        secure = candidateSecure,
+                        mode = mode,
+                        adamId = adamId,
+                        key = key,
+                        samples = samples,
+                        grpcClients = grpcClients,
+                    )
+                }
             }.onSuccess { return DecryptResult(candidateHost, it) }
                 .onFailure { error ->
                     errors += "$candidateHost: ${error.message ?: error.javaClass.simpleName}"
@@ -397,6 +407,53 @@ object AppleMusicWrapperManagerProvider {
         throw WrapperManagerException(
             "wrapper-manager Decrypt failed on every instance: ${errors.joinToString("; ")}"
         )
+    }
+
+    private inline fun <T> retryTransientWrapperCall(
+        operation: String,
+        host: String,
+        block: () -> T,
+    ): T {
+        var lastError: Throwable? = null
+        repeat(TRANSIENT_WRAPPER_RETRY_COUNT + 1) { attempt ->
+            try {
+                return block()
+            } catch (error: Throwable) {
+                lastError = error
+                if (!error.isTransientWrapperUnavailable() || attempt >= TRANSIENT_WRAPPER_RETRY_COUNT) {
+                    throw error
+                }
+                val delayMs = TRANSIENT_WRAPPER_RETRY_DELAY_MS * (attempt + 1L)
+                Timber.tag(TAG).w(
+                    error,
+                    "Apple wrapper $operation transient failure on $host; retrying in ${delayMs}ms",
+                )
+                try {
+                    Thread.sleep(delayMs)
+                } catch (interrupted: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    throw WrapperManagerException("Apple wrapper $operation retry was interrupted", interrupted)
+                }
+            }
+        }
+        throw lastError ?: WrapperManagerException("Apple wrapper $operation failed")
+    }
+
+    private fun Throwable.isTransientWrapperUnavailable(): Boolean {
+        var current: Throwable? = this
+        while (current != null) {
+            val text = current.message.orEmpty()
+            if (
+                text.contains("no healthy and ready instances available", ignoreCase = true) ||
+                text.contains("service unavailable", ignoreCase = true) ||
+                text.contains("gateway timeout", ignoreCase = true) ||
+                text.contains("bad gateway", ignoreCase = true)
+            ) {
+                return true
+            }
+            current = current.cause
+        }
+        return false
     }
 
     private fun decryptSegmentWithHedgedInstances(
@@ -515,14 +572,18 @@ object AppleMusicWrapperManagerProvider {
     private class StreamingThenBatchSampleDecryptClient(
         host: String,
         secure: Boolean,
-        mode: WrapperMode,
+        private val mode: WrapperMode,
     ) : SampleDecryptClient {
         private val fallback = BatchSampleDecryptClient(host = host, secure = secure, mode = mode)
-        private val streaming = runCatching {
-            StreamingGrpcSampleDecryptClient(rawHost = host, secure = secure, mode = mode)
-        }.onFailure { error ->
-            Timber.tag(TAG).w(error, "ALAC streaming decrypt client failed to initialize; using batch fallback")
-        }.getOrNull()
+        private val streaming =
+            runCatching {
+                StreamingGrpcSampleDecryptClient(rawHost = host, secure = secure, mode = mode)
+            }.onFailure { error ->
+                Timber.tag(TAG).w(
+                    error,
+                    "${mode.logLabel} streaming decrypt client failed to initialize; using batch fallback"
+                )
+            }.getOrNull()
 
         @Volatile
         private var closed = false
@@ -552,9 +613,25 @@ object AppleMusicWrapperManagerProvider {
                     runCatching { activeStreaming.close() }
                     Timber.tag(TAG).w(
                         error,
-                        "ALAC streaming decrypt failed; switching this session to batch fallback"
+                        if (mode == WrapperMode.ALAC) {
+                            "${mode.logLabel} streaming decrypt failed; switching this session to batch fallback"
+                        } else {
+                            "${mode.logLabel} streaming decrypt failed"
+                        }
                     )
+                    if (mode != WrapperMode.ALAC) {
+                        throw WrapperManagerException(
+                            "${mode.logLabel} streaming decrypt failed before the wrapper returned playable samples: " +
+                                (error.message ?: error.javaClass.simpleName),
+                            error,
+                        )
+                    }
                 }
+            }
+            if (mode != WrapperMode.ALAC) {
+                throw WrapperManagerException(
+                    "${mode.logLabel} streaming decrypt was not available; refusing slow batch fallback"
+                )
             }
             return fallback.decryptSegment(
                 adamId = adamId,
@@ -572,7 +649,7 @@ object AppleMusicWrapperManagerProvider {
                 fallback.deprioritizeHost(activeStreaming.host)
                 runCatching { activeStreaming.close() }
                 Timber.tag(TAG).w(
-                    "ALAC streaming decrypt disabled after $context integrity failure: $reason"
+                    "${mode.logLabel} streaming decrypt disabled after $context integrity failure: $reason"
                 )
             }
             return fallback.reportSegmentIntegrityFailure(context, reason) || streamingRerouted
@@ -694,7 +771,20 @@ object AppleMusicWrapperManagerProvider {
                     .header("Content-Type", "application/grpc")
                     .header("TE", "trailers")
                     .header("User-Agent", "Echo-TidalPlus/AppleMusicWrapperManager")
-                    .post(StreamingGrpcRequestBody(outboundFrames, closed))
+                    .post(
+                        StreamingGrpcRequestBody(
+                            frames = outboundFrames,
+                            closed = closed,
+                            keepaliveFrame = frameGrpcMessage(
+                                encodeDecryptRequest(
+                                    adamId = "KEEPALIVE",
+                                    key = "",
+                                    sampleIndex = 0,
+                                    sample = ByteArray(0),
+                                ),
+                            ),
+                        ),
+                    )
                     .build()
                 val grpcClient = if (request.url.scheme == "http") grpcClients.h2c else grpcClients.https
                 val call = grpcClient.newCall(request)
@@ -711,6 +801,7 @@ object AppleMusicWrapperManagerProvider {
                     while (!closed.get()) {
                         val payload = readGrpcFrame(source) ?: break
                         val reply = parseDecryptReply(payload)
+                        if (reply.adamId == "KEEPALIVE") continue
                         replyCount.incrementAndGet()
                         val pendingKey = PendingDecryptKey(reply.adamId, reply.key, reply.sampleIndex)
                         val future = pending.remove(pendingKey)
@@ -739,7 +830,7 @@ object AppleMusicWrapperManagerProvider {
             repliesBefore: Int,
             futures: Collection<CompletableFuture<ByteArray>>,
         ) {
-            val deadline = System.currentTimeMillis() + STREAMING_FIRST_REPLY_TIMEOUT_MS
+            val deadline = System.currentTimeMillis() + mode.streamingFirstReplyTimeoutMs
             while (System.currentTimeMillis() < deadline) {
                 ensureOpen()
                 if (replyCount.get() > repliesBefore || futures.any { it.isDone }) return
@@ -753,7 +844,7 @@ object AppleMusicWrapperManagerProvider {
             future: CompletableFuture<ByteArray>,
         ): ByteArray {
             return try {
-                future.get(STREAMING_SAMPLE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                future.get(mode.streamingSampleTimeoutMs, TimeUnit.MILLISECONDS)
             } catch (error: TimeoutException) {
                 throw WrapperManagerException(
                     "wrapper-manager streaming did not return usable sample ${pendingKey.sampleIndex}",
@@ -787,7 +878,7 @@ object AppleMusicWrapperManagerProvider {
             streamFailure = error
             closed.set(true)
             failPending(error)
-            Timber.tag(TAG).w(error, "ALAC streaming decrypt connection failed on $host")
+            Timber.tag(TAG).w(error, "${mode.logLabel} streaming decrypt connection failed on $host")
         }
 
         private fun failPending(error: Throwable) {
@@ -802,6 +893,7 @@ object AppleMusicWrapperManagerProvider {
     private class StreamingGrpcRequestBody(
         private val frames: LinkedBlockingQueue<ByteArray>,
         private val closed: AtomicBoolean,
+        private val keepaliveFrame: ByteArray,
     ) : RequestBody() {
         override fun contentType() = grpcMediaType
 
@@ -810,15 +902,50 @@ object AppleMusicWrapperManagerProvider {
         override fun isDuplex() = true
 
         override fun writeTo(sink: BufferedSink) {
+            val batch = ArrayList<ByteArray>(STREAMING_WRITE_BATCH_SIZE)
+            var lastKeepaliveAtMs = System.currentTimeMillis()
             while (true) {
                 if (closed.get() && frames.isEmpty()) return
-                val frame = frames.poll(STREAMING_WRITE_POLL_MS, TimeUnit.MILLISECONDS) ?: continue
+                val frame = frames.poll(STREAMING_WRITE_POLL_MS, TimeUnit.MILLISECONDS)
+                if (frame != null) {
+                    batch += frame
+                    frames.drainTo(batch, (STREAMING_WRITE_BATCH_SIZE - batch.size).coerceAtLeast(0))
+                } else {
+                    val now = System.currentTimeMillis()
+                    if (now - lastKeepaliveAtMs >= STREAMING_KEEPALIVE_MS) {
+                        batch += keepaliveFrame
+                        lastKeepaliveAtMs = now
+                    }
+                }
+                if (batch.isEmpty()) continue
                 if (closed.get()) return
-                sink.write(frame)
+                batch.forEach { sink.write(it) }
                 sink.flush()
+                batch.clear()
             }
         }
     }
+
+    private val WrapperMode.logLabel: String
+        get() = when (this) {
+            WrapperMode.ALAC -> "ALAC"
+            WrapperMode.AAC -> "Apple Music AAC"
+            WrapperMode.DOLBY_ATMOS -> "Apple Music Dolby Atmos"
+        }
+
+    private val WrapperMode.streamingFirstReplyTimeoutMs: Long
+        get() = if (this == WrapperMode.ALAC) {
+            STREAMING_FIRST_REPLY_TIMEOUT_MS
+        } else {
+            STREAMING_NON_ALAC_FIRST_REPLY_TIMEOUT_MS
+        }
+
+    private val WrapperMode.streamingSampleTimeoutMs: Long
+        get() = if (this == WrapperMode.ALAC) {
+            STREAMING_SAMPLE_TIMEOUT_MS
+        } else {
+            STREAMING_NON_ALAC_SAMPLE_TIMEOUT_MS
+        }
 
     private class BatchSampleDecryptClient(
         private val host: String,
@@ -1220,7 +1347,7 @@ object AppleMusicWrapperManagerProvider {
 
     private fun encryptedHlsException(mode: WrapperMode): WrapperManagerException {
         return WrapperManagerException(
-            "${mode.title} returned protected Apple HLS. Metrolist cannot direct-play this wrapper-manager URL; " +
+            "${mode.title} returned protected Apple HLS. MetroFuse cannot direct-play this wrapper-manager URL; " +
                 "AppleMusicDecrypt downloads, decrypts, and remuxes it before playback. Use the am-dl Apple option " +
                 "for now, or wire the full decrypt/remux pipeline before enabling wrapper playback."
         )
@@ -1306,6 +1433,9 @@ object AppleMusicWrapperManagerProvider {
             throw WrapperManagerException(
                 "wrapper-manager Decrypt failed: ${message.ifBlank { "code $code" }}"
             )
+        }
+        if (adamId == "KEEPALIVE") {
+            return DecryptReplySample(adamId, key, sampleIndex, decrypted)
         }
         if (decrypted.isEmpty()) {
             throw WrapperManagerException("wrapper-manager Decrypt returned an empty sample")
@@ -1452,7 +1582,6 @@ object AppleMusicWrapperManagerProvider {
 
     private val DEFAULT_INSTANCES = listOf(
         DEFAULT_HOST to true,
-        "wm1.wol.moe" to true,
     )
 
     private class ProtoWriter {

@@ -15,7 +15,7 @@ internal class LiveFlacBitrateDataSourceFactory(
     private val upstreamFactory: DataSource.Factory,
     private val isEnabled: () -> Boolean,
     private val mediaIdResolver: (DataSpec) -> String?,
-    private val isFlacCandidate: (DataSpec, String?) -> Boolean,
+    private val isParserCandidate: (DataSpec, String?) -> Boolean,
     private val sampleRateProvider: (String?) -> Int?,
     private val onBitrate: (String, Int, Long?, Long?) -> Unit,
 ) : DataSource.Factory {
@@ -24,7 +24,7 @@ internal class LiveFlacBitrateDataSourceFactory(
             upstream = upstreamFactory.createDataSource(),
             isEnabled = isEnabled,
             mediaIdResolver = mediaIdResolver,
-            isFlacCandidate = isFlacCandidate,
+            isParserCandidate = isParserCandidate,
             sampleRateProvider = sampleRateProvider,
             onBitrate = onBitrate,
         )
@@ -34,7 +34,7 @@ private class LiveFlacBitrateDataSource(
     private val upstream: DataSource,
     private val isEnabled: () -> Boolean,
     private val mediaIdResolver: (DataSpec) -> String?,
-    private val isFlacCandidate: (DataSpec, String?) -> Boolean,
+    private val isParserCandidate: (DataSpec, String?) -> Boolean,
     private val sampleRateProvider: (String?) -> Int?,
     private val onBitrate: (String, Int, Long?, Long?) -> Unit,
 ) : DataSource {
@@ -68,7 +68,7 @@ private class LiveFlacBitrateDataSource(
         }
 
         val mediaId = activeMediaId ?: mediaIdResolver(dataSpec).also { activeMediaId = it }
-        if (!isFlacCandidate(dataSpec, mediaId)) return read
+        if (!isParserCandidate(dataSpec, mediaId)) return read
 
         val activeParser =
             parser ?: FlacFrameBitrateParser(
