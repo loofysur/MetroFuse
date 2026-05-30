@@ -23,7 +23,6 @@ import com.metrolist.music.constants.CanvasArtworkPriorityKey
 import com.metrolist.music.constants.DeezerCookieKey
 import com.metrolist.music.constants.DownloadCanvasMode
 import com.metrolist.music.constants.DownloadCanvasModeKey
-import com.metrolist.music.constants.EmbedAnimatedCanvasKey
 import com.metrolist.music.constants.SpotifyCookieKey
 import com.metrolist.music.constants.TidalCookieKey
 import com.metrolist.music.db.MusicDatabase
@@ -879,13 +878,7 @@ object PublicDownloadExporter {
     }
 
     private fun effectiveDownloadCanvasMode(context: Context): DownloadCanvasMode {
-        val legacyDefault =
-            if (context.dataStore.get(EmbedAnimatedCanvasKey, false)) {
-                DownloadCanvasMode.BOTH
-            } else {
-                DownloadCanvasMode.OFF
-            }
-        return context.dataStore.get(DownloadCanvasModeKey).toEnum(legacyDefault)
+        return context.dataStore.get(DownloadCanvasModeKey).toEnum(DownloadCanvasMode.OFF)
     }
 
     private fun downloadCanvas(

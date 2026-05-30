@@ -130,7 +130,6 @@ import com.metrolist.music.constants.DownloadCanvasMode
 import com.metrolist.music.constants.DownloadCanvasModeKey
 import com.metrolist.music.constants.EnableLastFMScrobblingKey
 import com.metrolist.music.constants.EnableSongCacheKey
-import com.metrolist.music.constants.EmbedAnimatedCanvasKey
 import com.metrolist.music.constants.ExperimentalAppleMusicCoverFadeKey
 import com.metrolist.music.constants.HideExplicitKey
 import com.metrolist.music.constants.HideVideoSongsKey
@@ -883,12 +882,9 @@ class MusicService :
 
         dataStore.data
             .map { prefs ->
-                val legacyDownloadCanvasEnabled = prefs[EmbedAnimatedCanvasKey] ?: false
                 Triple(
                     prefs[SpotifyCanvasEnabledKey] ?: false,
-                    prefs[DownloadCanvasModeKey].toEnum(
-                        if (legacyDownloadCanvasEnabled) DownloadCanvasMode.BOTH else DownloadCanvasMode.OFF,
-                    ),
+                    prefs[DownloadCanvasModeKey].toEnum(DownloadCanvasMode.OFF),
                     prefs[ExperimentalAppleMusicCoverFadeKey] ?: false,
                 )
             }

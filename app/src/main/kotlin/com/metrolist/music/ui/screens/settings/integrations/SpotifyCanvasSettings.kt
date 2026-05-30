@@ -38,7 +38,6 @@ import com.metrolist.music.constants.CanvasArtworkPriority
 import com.metrolist.music.constants.CanvasArtworkPriorityKey
 import com.metrolist.music.constants.DownloadCanvasMode
 import com.metrolist.music.constants.DownloadCanvasModeKey
-import com.metrolist.music.constants.EmbedAnimatedCanvasKey
 import com.metrolist.music.constants.SpotifyCanvasEnabledKey
 import com.metrolist.music.constants.SpotifyCookieKey
 import com.metrolist.music.constants.SpotifyListeningHistoryEnabledKey
@@ -62,17 +61,12 @@ fun SpotifyCanvasSettings(
 ) {
     val (spotifyCanvasEnabled, onSpotifyCanvasEnabledChange) =
         rememberPreference(SpotifyCanvasEnabledKey, false)
-    val (legacyEmbedAnimatedCanvas, onLegacyEmbedAnimatedCanvasChange) =
-        rememberPreference(EmbedAnimatedCanvasKey, false)
     val (spotifyListeningHistoryEnabled, onSpotifyListeningHistoryEnabledChange) =
         rememberPreference(SpotifyListeningHistoryEnabledKey, false)
     val (spotifyListeningHistoryGlobal, onSpotifyListeningHistoryGlobalChange) =
         rememberPreference(SpotifyListeningHistoryGlobalKey, false)
     var canvasArtworkPriority by rememberEnumPreference(CanvasArtworkPriorityKey, CanvasArtworkPriority.APPLE_MUSIC)
-    var downloadCanvasMode by rememberEnumPreference(
-        DownloadCanvasModeKey,
-        if (legacyEmbedAnimatedCanvas) DownloadCanvasMode.BOTH else DownloadCanvasMode.OFF,
-    )
+    var downloadCanvasMode by rememberEnumPreference(DownloadCanvasModeKey, DownloadCanvasMode.OFF)
     var spotifyCookie by rememberPreference(SpotifyCookieKey, "")
     val cookieConfigured = isSpotifyCookieConfigured(spotifyCookie)
 
@@ -112,7 +106,6 @@ fun SpotifyCanvasSettings(
 
     fun updateDownloadCanvasMode(mode: DownloadCanvasMode) {
         downloadCanvasMode = mode
-        onLegacyEmbedAnimatedCanvasChange(mode != DownloadCanvasMode.OFF)
     }
 
     if (showCookieDialog) {
